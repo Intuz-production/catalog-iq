@@ -1,6 +1,6 @@
 ## About Intuz
 
-This library is maintained by [Intuz](https://www.intuz.com) — an AI-first software development company specializing in [Agentic AP Development](https://www.intuz.com/ai-agents-for-business-automation)
+This library is maintained by [Intuz](https://www.intuz.com) — an AI-first software development company specializing in [Agentic AI Development](https://www.intuz.com/ai-agents-for-business-automation)
 and [Generative AI Development](https://www.intuz.com/generative-ai-development).
   
   
