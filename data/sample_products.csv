@@ -1,0 +1,16 @@
+sku,title,description,category,brand,price,currency,color,size,material,weight
+SKU-001,Nike Air Max 90 Running Shoes,"The Nike Air Max 90 is a classic running shoe with visible Air cushioning.",Footwear,Nike,129.99,USD,White,10,Synthetic Mesh,0.8kg
+SKU-002,Samsung Galaxy S24 Ultra 256GB,Samsung Galaxy S24 phone with advanced AI features,Electronics,Samsung,1199.99,USD,Titanium Black,256GB,,0.23kg
+SKU-003,Levi's 501 Original Fit Jeans,,Apparel,Levi's,69.50,USD,Dark Blue,32x30,Cotton,0.9kg
+SKU-004,KitchenAid Stand Mixer 5-Quart,High quality mixer,Kitchen Appliances,KitchenAid,349.99,USD,Empire Red,,Die-Cast Metal,11.8kg
+SKU-005,Sony WH-1000XM5 Headphones,"Industry-leading noise canceling wireless headphones with Auto NC Optimizer and 30 hours of battery life.",Electronics,Sony,398.00,USD,blk,,,0.25kg
+SKU-006,Adidas Ultraboost Light Running,,Footwear,Adidas,190.00,USD,Core Black,9,primeknit,0.31kg
+SKU-007,Apple iPad Air M2 11-inch,,Electronics,Apple,599.00,USD,Space Gray,128GB,,0.46kg
+SKU-008,The North Face Nuptse Jacket,"Warm winter jacket made from recycled materials",Outerwear,The North Face,320.00,USD,Grn,lg,nyl,0.8kg
+SKU-009,Dyson V15 Detect Vacuum,"",Home Appliances,Dyson,749.99,USD,Gold,,Polycarbonate,3.1kg
+SKU-010,Canon EOS R6 Mark II Camera,A camera,Electronics,Canon,2499.00,USD,blk,,,598g
+SKU-011,Herman Miller Aeron Chair,"Ergonomic office chair with PostureFit SL support, adjustable arms, and breathable mesh material.",Furniture,Herman Miller,1395.00,USD,Graphite,med,Pellicle Mesh,
+SKU-012,Patagonia Better Sweater Fleece,,Apparel,Patagonia,139.00,USD,,M,polyester,0.5kg
+SKU-013,Bose QuietComfort Earbuds II,n/a,Electronics,Bose,279.00,USD,Triple Black,,,
+SKU-014,Le Creuset Dutch Oven 5.5-Qt,"Premium cast iron cooking pot with superior heat distribution.",Kitchen,Le Creuset,399.95,USD,Flame Orange,,Cast Iron,5.5kg
+SKU-015,Allbirds Tree Runners,Comfortable running shoes made with natural materials,Footwear,Allbirds,98.00,USD,wht,11,Eucalyptus Tree Fiber,0.2kg

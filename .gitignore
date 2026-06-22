@@ -1,0 +1,26 @@
+# Environment
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+
+# Data & artifacts
+*.pkl
+*.db
+*.sqlite3
+*.log
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Node / React
+ui/node_modules/
+ui/dist/
+ui/.env
+
+# OS
+Thumbs.db
