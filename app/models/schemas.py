@@ -32,6 +32,43 @@ class ProductStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
+class ProductSortField(str, enum.Enum):
+    """Allowed sort columns for product listing."""
+    SKU = "sku"
+    TITLE = "title"
+    CATEGORY = "category"
+    BRAND = "brand"
+    PRICE = "price"
+    STATUS = "status"
+    UPDATED_AT = "updated_at"
+
+
+class SortOrder(str, enum.Enum):
+    """Sort direction for list endpoints."""
+    ASC = "asc"
+    DESC = "desc"
+
+
+class IngestionJobSortField(str, enum.Enum):
+    """Allowed sort columns for ingestion job listing."""
+    ID = "id"
+    FILENAME = "filename"
+    STATUS = "status"
+    PROCESSED_ROWS = "processed_rows"
+    NEW_PRODUCTS = "new_products"
+    UPDATED_PRODUCTS = "updated_products"
+    ISSUES_FOUND = "issues_found"
+    STARTED_AT = "started_at"
+
+
+class DataIssueSortField(str, enum.Enum):
+    """Allowed sort columns for data issue listing."""
+    CREATED_AT = "created_at"
+    SEVERITY = "severity"
+    ISSUE_TYPE = "issue_type"
+    PRODUCT_ID = "product_id"
+
+
 class IssueType(str, enum.Enum):
     """Type of data quality issue detected."""
     MISSING_DESCRIPTION = "missing_description"
@@ -54,6 +91,8 @@ class CompetitorSource(str, enum.Enum):
     """Supported competitor marketplace sources."""
     AMAZON = "amazon"
     WALMART = "walmart"
+    EBAY = "ebay"
+    TARGET = "target"
     FLIPKART = "flipkart"
 
 
@@ -64,6 +103,14 @@ class AlertType(str, enum.Enum):
     OUT_OF_STOCK = "out_of_stock"
     BACK_IN_STOCK = "back_in_stock"
     UNDERCUT = "undercut"
+
+
+class ContentTone(str, enum.Enum):
+    """Supported writing tones for SEO content generation."""
+    PROFESSIONAL = "professional"
+    CASUAL = "casual"
+    LUXURY = "luxury"
+    TECHNICAL = "technical"
 
 
 # =============================================================================
@@ -142,6 +189,8 @@ class CompetitorPrice(Base):
     competitor_price = Column(Float, nullable=True)
     competitor_currency = Column(String(10), default="USD")
     in_stock = Column(Boolean, default=True)
+    is_simulated = Column(Boolean, default=False, nullable=False)
+    match_score = Column(Float, nullable=True)
     scraped_at = Column(DateTime, server_default=func.now())
 
     # Relationships
@@ -171,6 +220,23 @@ class CompetitorAlert(Base):
 
     def __repr__(self) -> str:
         return f"<CompetitorAlert(product_id={self.product_id}, type='{self.alert_type}')>"
+
+
+class User(Base):
+    """Application user account for authentication."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(200), nullable=True)
+    is_active = Column(Boolean, default=True)
+    is_superuser = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    def __repr__(self) -> str:
+        return f"<User(email='{self.email}')>"
 
 
 class IngestionJob(Base):
@@ -243,6 +309,14 @@ class ProductResponse(ProductBase):
     issue_count: Optional[int] = 0
 
 
+class ProductListResponse(BaseModel):
+    """Paginated product list API response."""
+    items: list[ProductResponse]
+    total: int
+    skip: int
+    limit: int
+
+
 class DataIssueResponse(BaseModel):
     """Schema for data issue API responses."""
     model_config = ConfigDict(from_attributes=True)
@@ -259,6 +333,14 @@ class DataIssueResponse(BaseModel):
     created_at: datetime
 
 
+class DataIssueListResponse(BaseModel):
+    """Paginated data issue list API response."""
+    items: list[DataIssueResponse]
+    total: int
+    skip: int
+    limit: int
+
+
 class CompetitorPriceResponse(BaseModel):
     """Schema for competitor price API responses."""
     model_config = ConfigDict(from_attributes=True)
@@ -269,7 +351,10 @@ class CompetitorPriceResponse(BaseModel):
     competitor_title: Optional[str] = None
     competitor_url: Optional[str] = None
     competitor_price: Optional[float] = None
+    competitor_currency: str = "USD"
     in_stock: bool
+    is_simulated: bool = False
+    match_score: Optional[float] = None
     scraped_at: datetime
 
 
@@ -306,30 +391,100 @@ class IngestionJobResponse(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class IngestionJobListResponse(BaseModel):
+    """Paginated ingestion job list API response."""
+    items: list[IngestionJobResponse]
+    total: int
+    skip: int
+    limit: int
+
+
 class ContentGenerationRequest(BaseModel):
     """Schema for requesting content generation."""
     product_ids: list[int] = Field(..., description="List of product IDs to generate content for")
-    tone: str = Field(default="professional", description="Tone of the generated content")
+    tone: ContentTone = Field(
+        default=ContentTone.PROFESSIONAL,
+        description="Tone of the generated content",
+    )
     include_seo: bool = Field(default=True, description="Whether to generate SEO metadata")
 
 
 class ContentGenerationResponse(BaseModel):
     """Schema for content generation results."""
     product_id: int
+    sku: Optional[str] = None
+    title: Optional[str] = None
     generated_description: str
     seo_title: Optional[str] = None
     seo_keywords: Optional[str] = None
+    word_count: Optional[int] = None
+    warnings: list[str] = Field(default_factory=list)
     success: bool
     error: Optional[str] = None
+
+
+def default_competitor_scrape_sources() -> list[CompetitorSource]:
+    """Resolve default scrape sources from SCRAPE_REGION env."""
+    from app.services.competitor_service import get_default_scrape_sources
+
+    return get_default_scrape_sources()
+
+
+class CompetitorMarketplaceResponse(BaseModel):
+    """Schema for a configured competitor marketplace."""
+    id: CompetitorSource
+    platform: str
+    region: str
+    label: str
+    currency: str
+    base_url: str
+    search_url_template: str
+
+
+class CompetitorConfigResponse(BaseModel):
+    """Schema for competitor monitoring configuration exposed to the UI."""
+    region: str
+    sources: list[CompetitorMarketplaceResponse]
+    usd_inr_exchange_rate: float = Field(
+        default=83.0,
+        description="USD to INR rate used for cross-currency price comparison",
+    )
 
 
 class CompetitorScrapeRequest(BaseModel):
     """Schema for triggering competitor scraping."""
     product_ids: Optional[list[int]] = Field(None, description="Specific products to scrape (None = all)")
     sources: list[CompetitorSource] = Field(
-        default=[CompetitorSource.AMAZON, CompetitorSource.WALMART, CompetitorSource.FLIPKART],
-        description="Marketplace sources to scrape"
+        default_factory=default_competitor_scrape_sources,
+        description="Marketplace sources to scrape",
     )
+
+
+class UserCreate(BaseModel):
+    """Schema for creating a new user."""
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., min_length=6, description="Plain-text password")
+    full_name: Optional[str] = Field(None, description="Display name")
+    is_superuser: bool = Field(default=False, description="Whether user has admin access")
+
+
+class UserResponse(BaseModel):
+    """Schema for user API responses (no password)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    full_name: Optional[str] = None
+    is_active: bool
+    is_superuser: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TokenResponse(BaseModel):
+    """Schema for JWT login responses."""
+    access_token: str
+    token_type: str = "bearer"
 
 
 class DashboardStats(BaseModel):

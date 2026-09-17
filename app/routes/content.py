@@ -5,13 +5,15 @@ Endpoints for generating SEO product descriptions using Groq LLM.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.models.database import get_db
 from app.models.schemas import (
-    ContentGenerationRequest, ContentGenerationResponse,
-    ProductResponse,
+    ContentGenerationRequest, ContentGenerationResponse, ContentTone,
+    ProductResponse, ProductListResponse, ProductSortField, SortOrder,
 )
 from app.services import content_service
 
@@ -54,27 +56,42 @@ def generate_content(
 @router.post("/generate/{product_id}", response_model=ContentGenerationResponse)
 def generate_single(
     product_id: int,
-    tone: str = "professional",
+    tone: ContentTone = ContentTone.PROFESSIONAL,
     include_seo: bool = True,
     db: Session = Depends(get_db),
 ) -> ContentGenerationResponse:
     """Generate content for a single product."""
     result = content_service.generate_content_for_product(
-        db, product_id, tone=tone, include_seo=include_seo
+        db, product_id, tone=tone.value, include_seo=include_seo
     )
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
     return result
 
 
-@router.get("/needs-content", response_model=list[ProductResponse])
+@router.get("/needs-content", response_model=ProductListResponse)
 def get_products_needing_content(
-    limit: int = 50,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search in title, SKU, brand"),
+    sort_by: ProductSortField = Query(
+        ProductSortField.UPDATED_AT, description="Column to sort by"
+    ),
+    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort direction"),
     db: Session = Depends(get_db),
-) -> list[ProductResponse]:
-    """Get products that need content generation.
-
-    Returns products with missing or thin descriptions.
-    """
-    products = content_service.get_products_needing_content(db, limit=limit)
-    return [ProductResponse.model_validate(p) for p in products]
+) -> ProductListResponse:
+    """Get products that need content generation with pagination and sorting."""
+    products, total = content_service.get_products_needing_content(
+        db,
+        skip=skip,
+        limit=limit,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    return ProductListResponse(
+        items=[ProductResponse.model_validate(p) for p in products],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )

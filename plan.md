@@ -62,8 +62,8 @@ The platform uses a FastAPI backend exposing REST APIs consumed by a React front
 | Layer | Technology | Purpose |
 |-------|------------|---------|
 | Backend | FastAPI (Python) | High-performance async REST API for all three pipelines and frontend communication |
-| AI/ML | Groq API + LLaMA 3.3 70B Versatile | Fast inference for product description generation and attribute normalization |
-| Storage | PostgreSQL + SQLAlchemy | Structured storage for products, normalized attributes, competitor snapshots, and flagged issues |
+| AI/ML | Groq API + GPT-OSS 120B | Fast inference for product description generation |
+| Storage | PostgreSQL + SQLAlchemy | Structured storage for products, users, normalized attributes, competitor snapshots, and flagged issues |
 | Frontend | React (Vite) | Modern SPA dashboard for product management, content review, and competitor monitoring |
 | Scraping | httpx + BeautifulSoup4 | Lightweight async HTTP client and HTML parser for competitor marketplace scraping |
 | Data Processing | Pandas | CSV parsing, data transformation, and attribute normalization |
@@ -73,14 +73,15 @@ The platform uses a FastAPI backend exposing REST APIs consumed by a React front
 
 ## Deliverables
 
-- [ ] Complete runnable Python backend in `catalog-iq/app/`
-- [ ] React frontend dashboard in `catalog-iq/ui/`
-- [ ] CSV ingestion and data normalization pipeline with contradiction flagging
-- [ ] LLM-powered SEO product description generator using Groq
-- [ ] Competitor price and stock scraper for Amazon, Walmart, and Flipkart
-- [ ] PostgreSQL database schema with migrations
-- [ ] Sample CSV product data for demo
-- [ ] `.env.example`, `setup.sh`, tests, and `README.md`
+- [x] User authentication with JWT login and default admin seeder
+- [x] Complete runnable Python backend in `catalog-iq/app/`
+- [x] React frontend dashboard in `catalog-iq/ui/`
+- [x] CSV ingestion and data normalization pipeline with contradiction flagging
+- [x] LLM-powered SEO product description generator using Groq
+- [x] Competitor price and stock scraper for Amazon, Walmart, and Flipkart
+- [x] PostgreSQL database schema with migrations (startup migrations; Alembic pending)
+- [x] Sample CSV product data for demo
+- [x] `.env.example`, `setup.sh`, tests, and `README.md`
 
 ---
 
@@ -103,9 +104,16 @@ catalog-iq/
 │   │   ├── ingestion_service.py      # CSV parsing and data normalization
 │   │   ├── content_service.py        # LLM-powered description generation
 │   │   ├── competitor_service.py     # Marketplace scraping and monitoring
-│   │   └── product_service.py        # Product CRUD operations
+│   │   ├── product_service.py        # Product CRUD operations
+│   │   ├── user_service.py           # User account helpers
+│   │   ├── auth_service.py           # Login and JWT issuance
+│   │   └── seed_service.py           # Default admin user seeder
+│   ├── dependencies/
+│   │   ├── __init__.py
+│   │   └── auth.py                   # JWT auth dependency for protected routes
 │   ├── routes/
 │   │   ├── __init__.py
+│   │   ├── auth.py                   # Login and current-user endpoints
 │   │   ├── products.py               # Product management endpoints
 │   │   ├── ingestion.py              # CSV upload and normalization endpoints
 │   │   ├── content.py                # Content generation endpoints
@@ -113,7 +121,8 @@ catalog-iq/
 │   └── utils/
 │       ├── __init__.py
 │       ├── helpers.py                # Shared utility functions
-│       └── scraper.py                # Base scraping utilities
+│       ├── scraper.py                # Base scraping utilities
+│       └── security.py               # Password hashing and JWT helpers
 ├── ui/
 │   ├── index.html
 │   ├── package.json
@@ -122,14 +131,24 @@ catalog-iq/
 │   │   ├── main.jsx                  # React entry point
 │   │   ├── App.jsx                   # Root component with routing
 │   │   ├── api/
-│   │   │   └── client.js             # API client for FastAPI backend
+│   │   │   ├── http.js               # Shared fetch wrapper with auth headers
+│   │   │   ├── auth.js               # Login and current-user API calls
+│   │   │   └── client.js             # Domain API functions
+│   │   ├── lib/
+│   │   │   ├── auth-context.js       # Shared auth React context
+│   │   │   ├── auth-storage.js       # JWT token storage helpers
+│   │   │   └── use-auth.js           # Auth state hook
 │   │   ├── components/
+│   │   │   ├── auth/
+│   │   │   │   ├── auth-provider.jsx # Auth state provider component
+│   │   │   │   └── protected-route.jsx # Route guard for authenticated pages
 │   │   │   ├── Layout.jsx            # App shell with navigation
 │   │   │   ├── ProductTable.jsx      # Product listing with filters
 │   │   │   ├── DataIssueCard.jsx     # Flagged contradiction display
 │   │   │   ├── ContentPreview.jsx    # Generated description preview
 │   │   │   └── CompetitorChart.jsx   # Price trend visualization
 │   │   ├── pages/
+│   │   │   ├── Login.jsx             # Email/password sign-in page
 │   │   │   ├── Dashboard.jsx         # Overview with key metrics
 │   │   │   ├── Products.jsx          # Product catalog management
 │   │   │   ├── Ingestion.jsx         # CSV upload and normalization
@@ -144,7 +163,8 @@ catalog-iq/
 │   ├── __init__.py
 │   ├── test_ingestion.py             # Ingestion pipeline tests
 │   ├── test_content.py               # Content generation tests
-│   └── test_competitors.py           # Competitor scraping tests
+│   ├── test_competitors.py           # Competitor scraping tests
+│   └── test_auth.py                  # Password hashing and JWT tests
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
@@ -160,12 +180,18 @@ catalog-iq/
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GROQ_API_KEY` | Yes | -- | API key from https://console.groq.com/keys |
-| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model to use for content generation |
+| `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Groq model to use for content generation |
 | `DATABASE_URL` | Yes | -- | PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/catalogiq`) |
 | `FASTAPI_HOST` | No | `0.0.0.0` | Host for the FastAPI server |
 | `FASTAPI_PORT` | No | `8000` | Port for the FastAPI server |
 | `SCRAPE_INTERVAL_HOURS` | No | `6` | How often competitor scraping runs (in hours) |
-| `REACT_APP_API_URL` | No | `http://localhost:8000` | Backend API URL for the React frontend |
+| `JWT_SECRET_KEY` | No | `change-me-in-production` | Secret used to sign JWT access tokens |
+| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
+| `JWT_EXPIRE_MINUTES` | No | `1440` | JWT token lifetime in minutes (24 hours) |
+| `DEFAULT_ADMIN_EMAIL` | No | `admin@catalogiq.local` | Email for the default admin user seeded on startup |
+| `DEFAULT_ADMIN_PASSWORD` | No | `admin123` | Password for the default admin user seeded on startup |
+| `DEFAULT_ADMIN_NAME` | No | `Admin` | Display name for the default admin user |
+| `VITE_API_URL` | No | `http://localhost:8000` | Backend API URL for the React frontend |
 
 ---
 
@@ -173,13 +199,14 @@ catalog-iq/
 
 - Domain: Generative AI Development
 - Industry: E-Commerce (small-to-mid sized stores, 500-5,000 SKUs)
-- LLM Provider: Groq API with LLaMA 3.3 70B Versatile model
+- LLM Provider: Groq API with `openai/gpt-oss-120b` (replaces retired `llama-3.3-70b-versatile`)
 - Frontend: React (Vite) -- separate from backend
 - Backend: FastAPI (Python)
 - Database: PostgreSQL
 - Data Ingestion: CSV upload (supplier feeds)
 - Content Generation: SEO product descriptions grounded in structured attributes
 - Competitor Monitoring: Scrape Amazon, Walmart, Flipkart for prices and stock
+- Authentication: JWT login, protected API routes, default admin user seeder
 - Alerting: Dashboard-based alerts only (no SMTP email for now)
 - Three core pipelines: Data Cleanup, Content Generation, Competitor Monitoring
 
@@ -189,7 +216,7 @@ catalog-iq/
 
 - Shopify/WooCommerce API integration (CSV only for this version)
 - SMTP email notifications (dashboard alerts only)
-- User authentication and multi-tenant support
+- Multi-tenant support and role-based access control beyond a single admin user
 - Real-time WebSocket updates
 - Payment processing or order management
 - Mobile application

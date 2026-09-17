@@ -12,35 +12,47 @@ from sqlalchemy.orm import Session
 
 from app.models.database import get_db
 from app.models.schemas import (
-    ProductStatus, ProductCreate, ProductUpdate,
-    ProductResponse, DataIssueResponse, DashboardStats,
+    ProductStatus, ProductSortField, SortOrder,
+    ProductCreate, ProductUpdate,
+    ProductResponse, ProductListResponse, DataIssueResponse, DashboardStats,
 )
-from app.services import product_service
+from app.services import product_service, ingestion_service
 
 logger = logging.getLogger("catalogiq.routes.products")
 
 router = APIRouter(prefix="/api/products", tags=["Products"])
 
 
-@router.get("/", response_model=list[ProductResponse])
+@router.get("/", response_model=ProductListResponse)
 def list_products(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     status: Optional[ProductStatus] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search in title, SKU, brand"),
     category: Optional[str] = Query(None, description="Filter by category"),
+    sort_by: ProductSortField = Query(
+        ProductSortField.UPDATED_AT, description="Column to sort by"
+    ),
+    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort direction"),
     db: Session = Depends(get_db),
-) -> list[ProductResponse]:
-    """List products with optional filtering and pagination."""
-    products = product_service.get_products(
-        db, skip=skip, limit=limit, status=status, search=search, category=category
+) -> ProductListResponse:
+    """List products with optional filtering, sorting, and pagination."""
+    products, total = product_service.get_products(
+        db,
+        skip=skip,
+        limit=limit,
+        status=status,
+        search=search,
+        category=category,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     results = []
     for p in products:
         resp = ProductResponse.model_validate(p)
         resp.issue_count = len([i for i in p.issues if not i.resolved])
         results.append(resp)
-    return results
+    return ProductListResponse(items=results, total=total, skip=skip, limit=limit)
 
 
 @router.get("/categories", response_model=list[str])
@@ -91,11 +103,18 @@ def update_product(
     updates: ProductUpdate,
     db: Session = Depends(get_db),
 ) -> ProductResponse:
-    """Update an existing product."""
+    """Update an existing product and re-run data quality checks."""
     product = product_service.update_product(db, product_id, updates)
     if not product:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
-    return ProductResponse.model_validate(product)
+
+    product = ingestion_service.finalize_product_edit(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+
+    resp = ProductResponse.model_validate(product)
+    resp.issue_count = len([i for i in product.issues if not i.resolved])
+    return resp
 
 
 @router.delete("/{product_id}", status_code=204)

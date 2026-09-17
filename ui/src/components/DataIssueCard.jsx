@@ -75,7 +75,7 @@ export default function DataIssueCard({ issue, onResolve }) {
       {onResolve && !issue.resolved && (
         <button
           className="btn btn-ghost btn-sm"
-          onClick={() => onResolve(issue.id)}
+          onClick={() => onResolve(issue)}
           title="Mark as resolved"
         >
           <CheckCircle size={14} />

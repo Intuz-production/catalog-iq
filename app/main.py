@@ -9,15 +9,17 @@ import logging
 import uvicorn
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings, setup_logging
 from app.models.database import init_db, SessionLocal
-from app.routes import products, ingestion, content, competitors
-from app.models.schemas import CompetitorScrapeRequest, CompetitorSource
-from app.services.competitor_service import run_competitor_scrape
+from app.models.schemas import CompetitorScrapeRequest
+from app.routes import products, ingestion, content, competitors, auth
+from app.services.competitor_service import get_default_scrape_sources, run_competitor_scrape
+from app.dependencies.auth import get_current_user
+from app.services.seed_service import seed_default_user
 
 logger = setup_logging()
 
@@ -30,9 +32,7 @@ async def scheduled_competitor_scrape() -> None:
     logger.info("Running scheduled competitor scrape...")
     db = SessionLocal()
     try:
-        request = CompetitorScrapeRequest(
-            sources=[CompetitorSource.AMAZON, CompetitorSource.WALMART, CompetitorSource.FLIPKART]
-        )
+        request = CompetitorScrapeRequest(sources=get_default_scrape_sources())
         result = await run_competitor_scrape(db, request)
         logger.info(f"Scheduled scrape complete: {result}")
     except Exception as e:
@@ -48,6 +48,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting CatalogIQ - AI Catalog Intelligence Platform")
     settings.validate()
     init_db()
+
+    db = SessionLocal()
+    try:
+        seed_default_user(db)
+    finally:
+        db.close()
 
     # Start competitor scraping scheduler
     scheduler.add_job(
@@ -65,7 +71,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Server running at http://{settings.FASTAPI_HOST}:{settings.FASTAPI_PORT}"
     )
-    logger.info("API documentation at http://localhost:8000/docs")
+    logger.info(f"API documentation at {settings.docs_url}")
 
     yield
 
@@ -88,17 +94,18 @@ app = FastAPI(
 # CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Register route modules
-app.include_router(products.router)
-app.include_router(ingestion.router)
-app.include_router(content.router)
-app.include_router(competitors.router)
+app.include_router(auth.router)
+app.include_router(products.router, dependencies=[Depends(get_current_user)])
+app.include_router(ingestion.router, dependencies=[Depends(get_current_user)])
+app.include_router(content.router, dependencies=[Depends(get_current_user)])
+app.include_router(competitors.router, dependencies=[Depends(get_current_user)])
 
 
 @app.get("/", tags=["Health"])
@@ -120,6 +127,8 @@ def health_check() -> dict:
         "database": "connected",
         "llm_model": settings.GROQ_MODEL,
         "scrape_interval_hours": settings.SCRAPE_INTERVAL_HOURS,
+        "scrape_region": settings.scrape_region,
+        "scrape_sources": settings.scrape_source_ids,
     }
 
 
@@ -128,6 +137,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.FASTAPI_HOST,
         port=settings.FASTAPI_PORT,
-        reload=True,
+        reload=settings.FASTAPI_RELOAD,
         log_level=settings.LOG_LEVEL.lower(),
     )

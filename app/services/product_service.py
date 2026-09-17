@@ -12,10 +12,47 @@ from sqlalchemy import func, or_
 
 from app.models.schemas import (
     Product, DataIssue, CompetitorAlert, IngestionJob,
-    ProductStatus, ProductCreate, ProductUpdate, ProductResponse, DashboardStats,
+    ProductStatus, ProductSortField, SortOrder,
+    ProductCreate, ProductUpdate, ProductResponse, DashboardStats,
 )
 
+SORT_COLUMNS = {
+    ProductSortField.SKU: Product.sku,
+    ProductSortField.TITLE: Product.title,
+    ProductSortField.CATEGORY: Product.category,
+    ProductSortField.BRAND: Product.brand,
+    ProductSortField.PRICE: Product.price,
+    ProductSortField.STATUS: Product.status,
+    ProductSortField.UPDATED_AT: Product.updated_at,
+}
+
 logger = logging.getLogger("catalogiq.product_service")
+
+
+def _build_products_query(
+    db: Session,
+    status: Optional[ProductStatus] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+):
+    """Build a filtered product query without pagination or sorting."""
+    query = db.query(Product)
+
+    if status:
+        query = query.filter(Product.status == status)
+    if category:
+        query = query.filter(Product.category == category)
+    if search:
+        search_term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Product.title.ilike(search_term),
+                Product.sku.ilike(search_term),
+                Product.brand.ilike(search_term),
+            )
+        )
+
+    return query
 
 
 def get_products(
@@ -25,38 +62,35 @@ def get_products(
     status: Optional[ProductStatus] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
-) -> list[Product]:
-    """Retrieve products with optional filtering and pagination.
+    sort_by: ProductSortField = ProductSortField.UPDATED_AT,
+    sort_order: SortOrder = SortOrder.DESC,
+) -> tuple[list[Product], int]:
+    """Retrieve products with optional filtering, sorting, and pagination.
 
     Args:
         db: Database session.
         skip: Number of records to skip.
         limit: Maximum records to return.
         status: Filter by product status.
-        search: Search term for title/SKU matching.
+        search: Search term for title/SKU/brand matching.
         category: Filter by category.
+        sort_by: Column to sort by.
+        sort_order: Sort direction.
 
     Returns:
-        List of matching Product records.
+        Tuple of matching Product records and total count before pagination.
     """
-    query = db.query(Product)
+    query = _build_products_query(db, status=status, search=search, category=category)
+    total = query.count()
 
-    if status:
-        query = query.filter(Product.status == status)
-    if category:
-        query = query.filter(Product.category == category)
-    if search:
-        search_term = f"%{search}%"
-        query = query.filter(
-            or_(
-                Product.title.ilike(search_term),
-                Product.sku.ilike(search_term),
-                Product.brand.ilike(search_term),
-            )
-        )
+    sort_column = SORT_COLUMNS.get(sort_by, Product.updated_at)
+    if sort_order == SortOrder.ASC:
+        query = query.order_by(sort_column.asc())
+    else:
+        query = query.order_by(sort_column.desc())
 
-    query = query.order_by(Product.updated_at.desc())
-    return query.offset(skip).limit(limit).all()
+    products = query.offset(skip).limit(limit).all()
+    return products, total
 
 
 def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
@@ -191,8 +225,11 @@ def get_dashboard_stats(db: Session) -> DashboardStats:
         Product.generated_description.is_(None) | (Product.generated_description == ""),
     ).scalar() or 0
 
+    from app.services.competitor_service import get_enabled_competitor_sources
+
     recent_alerts = db.query(func.count(CompetitorAlert.id)).filter(
-        CompetitorAlert.acknowledged == False
+        CompetitorAlert.acknowledged == False,
+        CompetitorAlert.source.in_(get_enabled_competitor_sources()),
     ).scalar() or 0
 
     last_job = db.query(IngestionJob).order_by(IngestionJob.started_at.desc()).first()

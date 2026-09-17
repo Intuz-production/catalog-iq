@@ -1,48 +1,92 @@
 /**
  * CatalogIQ — Products Page
  *
- * Product catalog management with search, filtering, and detail views.
+ * Product catalog management with server-side search, filtering, sorting, and pagination.
  */
 
 import { useState, useEffect } from "react";
-import { Search, Filter, X } from "lucide-react";
+import { Search } from "lucide-react";
 import {
   fetchProducts, fetchCategories, deleteProduct,
-  generateSingleContent, fetchProductIssues,
+  generateSingleContent, fetchProductIssues, updateProduct,
 } from "../api/client";
 import ProductTable from "../components/ProductTable";
-import ContentPreview from "../components/ContentPreview";
-import DataIssueCard from "../components/DataIssueCard";
+import ProductDetailDialog from "../components/ProductDetailDialog";
+import Select from "../components/Select";
+import { useToast } from "../lib/use-toast";
+import { useConfirm } from "../lib/use-confirm";
+
+const DEFAULT_PAGE_SIZE = 15;
 
 export default function Products() {
+  const { showToast } = useToast();
+  const { confirm } = useConfirm();
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [sortBy, setSortBy] = useState("updated_at");
+  const [sortOrder, setSortOrder] = useState("desc");
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productIssues, setProductIssues] = useState([]);
+  const [issuesLoading, setIssuesLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    loadCategories();
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery((prev) => {
+        const next = searchInput.trim();
+        if (prev !== next) {
+          setPage(1);
+        }
+        return next;
+      });
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   useEffect(() => {
     loadProducts();
-    loadCategories();
-  }, [statusFilter, categoryFilter]);
+  }, [page, pageSize, statusFilter, categoryFilter, searchQuery, sortBy, sortOrder]);
 
   async function loadProducts() {
     try {
       setLoading(true);
       const data = await fetchProducts({
+        skip: (page - 1) * pageSize,
+        limit: pageSize,
         status: statusFilter || undefined,
         category: categoryFilter || undefined,
-        search: search || undefined,
-        limit: 100,
+        search: searchQuery || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
       });
-      setProducts(data);
+      setProducts(data.items);
+      setTotal(data.total);
+
+      const maxPage = Math.max(1, Math.ceil(data.total / pageSize));
+      if (page > maxPage) {
+        setPage(maxPage);
+      }
+
+      return data;
     } catch (err) {
-      showToast("Failed to load products", "error");
+      showToast(err.message || "Failed to load products", "error");
+      setProducts([]);
+      setTotal(0);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -53,39 +97,82 @@ export default function Products() {
       const cats = await fetchCategories();
       setCategories(cats);
     } catch (err) {
-      console.error("Failed to load categories:", err);
+      showToast(err.message || "Failed to load categories", "error");
     }
   }
 
-  async function handleSearch(e) {
-    e.preventDefault();
-    loadProducts();
+  function handleStatusFilterChange(value) {
+    setStatusFilter(value);
+    setPage(1);
   }
 
-  async function handleDelete(productId) {
-    if (!confirm("Are you sure you want to delete this product?")) return;
+  function handleCategoryFilterChange(value) {
+    setCategoryFilter(value);
+    setPage(1);
+  }
+
+  function handleSort(nextSortBy, nextSortOrder) {
+    setSortBy(nextSortBy);
+    setSortOrder(nextSortOrder);
+    setPage(1);
+  }
+
+  function handlePageSizeChange(nextPageSize) {
+    setPageSize(nextPageSize);
+    setPage(1);
+  }
+
+  async function handleDeleteRequest(product) {
+    const confirmed = await confirm({
+      title: "Delete Product",
+      message: `Are you sure you want to delete "${product.title}"? This action cannot be undone.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+
     try {
-      await deleteProduct(productId);
+      await deleteProduct(product.id);
       showToast("Product deleted", "success");
       loadProducts();
-      if (selectedProduct?.id === productId) setSelectedProduct(null);
+      if (selectedProduct?.id === product.id) setSelectedProduct(null);
     } catch (err) {
-      showToast("Failed to delete product", "error");
+      showToast(err.message || "Failed to delete product", "error");
     }
   }
 
   async function handleGenerateContent(productId) {
+    const product = products.find((item) => item.id === productId) || selectedProduct;
+    const productTitle = product?.title || `Product #${productId}`;
+
+    const confirmed = await confirm({
+      title: "Generate SEO Content",
+      message: `Generate SEO content for "${productTitle}"? This creates a description and SEO metadata from product attributes and may overwrite existing generated content.`,
+      confirmLabel: "Generate",
+      cancelLabel: "Cancel",
+      variant: "primary",
+    });
+    if (!confirmed) return;
+
     try {
       setGenerating(true);
       const result = await generateSingleContent(productId);
-      showToast("Content generated successfully", "success");
-      loadProducts();
+      if (result.warnings?.length) {
+        showToast(`Content generated with ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`, "warning");
+      } else {
+        showToast("Content generated successfully", "success");
+      }
+      await loadProducts();
       if (selectedProduct?.id === productId) {
+        const issues = await fetchProductIssues(productId);
+        setProductIssues(issues);
         setSelectedProduct({
           ...selectedProduct,
           generated_description: result.generated_description,
           seo_title: result.seo_title,
           seo_keywords: result.seo_keywords,
+          issue_count: issues.filter((issue) => !issue.resolved).length,
         });
       }
     } catch (err) {
@@ -97,21 +184,47 @@ export default function Products() {
 
   async function handleViewDetails(product) {
     setSelectedProduct(product);
+    setProductIssues([]);
+    setIssuesLoading(true);
+
     try {
       const issues = await fetchProductIssues(product.id);
       setProductIssues(issues);
     } catch (err) {
       setProductIssues([]);
+      showToast(err.message || "Failed to load product issues", "error");
+    } finally {
+      setIssuesLoading(false);
     }
   }
 
-  function showToast(message, type = "info") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  function handleCloseDetails() {
+    if (generating || saving) return;
+    setSelectedProduct(null);
+    setProductIssues([]);
+    setIssuesLoading(false);
+  }
+
+  async function handleSaveProduct(productId, payload) {
+    try {
+      setSaving(true);
+      const updated = await updateProduct(productId, payload);
+      showToast("Product updated and quality checks re-run", "success");
+      await loadProducts();
+      setSelectedProduct(updated);
+      const issues = await fetchProductIssues(productId);
+      setProductIssues(issues);
+    } catch (err) {
+      showToast(err.message || "Failed to update product", "error");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
-    <div className="animate-in">
+    <>
+      <div className="animate-in">
       <div className="page-header">
         <h2>Products</h2>
         <p>Manage your product catalog</p>
@@ -119,7 +232,7 @@ export default function Products() {
 
       {/* Toolbar */}
       <div className="toolbar">
-        <form onSubmit={handleSearch} className="search-input">
+        <div className="search-input">
           <div style={{ position: "relative" }}>
             <Search
               size={16}
@@ -134,32 +247,36 @@ export default function Products() {
             <input
               type="search"
               placeholder="Search by title, SKU, or brand..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               style={{ paddingLeft: 36 }}
             />
           </div>
-        </form>
+        </div>
         <div className="filters-row">
-          <select
+          <Select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          >
-            <option value="">All Statuses</option>
-            <option value="active">Active</option>
-            <option value="draft">Draft</option>
-            <option value="flagged">Flagged</option>
-            <option value="archived">Archived</option>
-          </select>
-          <select
+            onChange={handleStatusFilterChange}
+            placeholder="All Statuses"
+            ariaLabel="Filter by status"
+            options={[
+              { value: "", label: "All Statuses" },
+              { value: "active", label: "Active" },
+              { value: "draft", label: "Draft" },
+              { value: "flagged", label: "Flagged" },
+              { value: "archived", label: "Archived" },
+            ]}
+          />
+          <Select
             value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <option value="">All Categories</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
+            onChange={handleCategoryFilterChange}
+            placeholder="All Categories"
+            ariaLabel="Filter by category"
+            options={[
+              { value: "", label: "All Categories" },
+              ...categories.map((cat) => ({ value: cat, label: cat })),
+            ]}
+          />
         </div>
       </div>
 
@@ -167,125 +284,30 @@ export default function Products() {
       <ProductTable
         products={products}
         loading={loading}
-        onDelete={handleDelete}
+        onDelete={handleDeleteRequest}
         onGenerateContent={handleGenerateContent}
         onViewDetails={handleViewDetails}
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSort={handleSort}
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={setPage}
+        onPageSizeChange={handlePageSizeChange}
       />
+      </div>
 
-      {/* Product Detail Panel */}
-      {selectedProduct && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            right: 0,
-            bottom: 0,
-            width: 520,
-            background: "var(--bg-secondary)",
-            borderLeft: "1px solid var(--border-color)",
-            zIndex: 200,
-            overflow: "auto",
-            padding: 24,
-            boxShadow: "-8px 0 30px rgba(0,0,0,0.5)",
-            animation: "slideIn 0.3s ease",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <h3>{selectedProduct.title}</h3>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setSelectedProduct(null)}
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>SKU</span>
-              <p style={{ fontFamily: "monospace" }}>{selectedProduct.sku}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Price</span>
-              <p>{selectedProduct.price ? `${selectedProduct.currency} ${selectedProduct.price.toFixed(2)}` : "N/A"}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Category</span>
-              <p>{selectedProduct.category || "N/A"}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Brand</span>
-              <p>{selectedProduct.brand || "N/A"}</p>
-            </div>
-          </div>
-
-          {/* Attributes */}
-          {selectedProduct.attributes && Object.keys(selectedProduct.attributes).length > 0 && (
-            <div style={{ marginBottom: 20 }}>
-              <h4 style={{ fontSize: "0.85rem", marginBottom: 8 }}>Attributes</h4>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {Object.entries(selectedProduct.attributes).map(([key, val]) => (
-                  <span
-                    key={key}
-                    style={{
-                      padding: "4px 10px",
-                      background: "var(--bg-input)",
-                      borderRadius: 50,
-                      fontSize: "0.78rem",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    <strong style={{ color: "var(--text-secondary)" }}>{key}:</strong>{" "}
-                    {String(val)}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Content */}
-          <div style={{ marginBottom: 20 }}>
-            <ContentPreview product={selectedProduct} />
-          </div>
-
-          {!selectedProduct.generated_description && (
-            <button
-              className="btn btn-primary"
-              onClick={() => handleGenerateContent(selectedProduct.id)}
-              disabled={generating}
-              style={{ width: "100%", justifyContent: "center", marginBottom: 20 }}
-            >
-              {generating ? (
-                <>
-                  <div className="spinner" style={{ width: 16, height: 16, borderWidth: 2, margin: 0 }} />
-                  Generating...
-                </>
-              ) : (
-                "Generate SEO Description"
-              )}
-            </button>
-          )}
-
-          {/* Issues */}
-          {productIssues.length > 0 && (
-            <div>
-              <h4 style={{ fontSize: "0.85rem", marginBottom: 10 }}>
-                Data Issues ({productIssues.length})
-              </h4>
-              {productIssues.map((issue) => (
-                <DataIssueCard key={issue.id} issue={issue} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast ${toast.type}`}>{toast.message}</div>
-        </div>
-      )}
-    </div>
+      <ProductDetailDialog
+        product={selectedProduct}
+        issues={productIssues}
+        issuesLoading={issuesLoading}
+        generating={generating}
+        saving={saving}
+        onClose={handleCloseDetails}
+        onGenerateContent={handleGenerateContent}
+        onSave={handleSaveProduct}
+      />
+    </>
   );
 }

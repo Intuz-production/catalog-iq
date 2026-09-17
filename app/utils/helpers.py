@@ -10,6 +10,34 @@ from typing import Any, Optional
 
 logger = logging.getLogger("catalogiq.helpers")
 
+PLACEHOLDER_VALUES: frozenset[str] = frozenset({
+    "n/a", "na", "none", "null", "nil", "-", "--", "tbd", "unknown",
+    "not available", "not applicable", "description not available",
+    "no description", "missing", "empty", "undefined", "nan",
+})
+
+KNOWN_COLORS: tuple[str, ...] = (
+    "black", "white", "blue", "red", "green", "grey", "gray",
+    "yellow", "pink", "purple", "orange", "brown", "navy",
+    "silver", "gold", "beige", "tan",
+)
+
+KNOWN_MATERIALS: tuple[str, ...] = (
+    "cotton", "nylon", "polyester", "leather", "wool", "silk", "mesh",
+    "stainless steel", "aluminum", "aluminium", "synthetic", "plastic",
+    "cast iron", "polycarbonate", "primeknit", "eucalyptus",
+)
+
+SIZE_LABEL_TERMS: dict[str, tuple[str, ...]] = {
+    "XS": ("extra small", "x-small", " xs ", "xs "),
+    "S": (" small", "size s", " sm "),
+    "M": (" medium", "size m", " med "),
+    "L": (" large", "size l", " lg "),
+    "XL": ("extra large", "x-large", "xlarge", " xl "),
+    "XXL": ("xx-large", "xx large", "2xl", " xxl "),
+    "XXXL": ("xxx-large", "3xl", " xxxl "),
+}
+
 
 def normalize_text(text: str) -> str:
     """Normalize text by stripping whitespace and standardizing spacing.
@@ -25,6 +53,40 @@ def normalize_text(text: str) -> str:
     text = text.strip()
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def is_placeholder_value(value: Optional[str]) -> bool:
+    """Return True when a supplier value should be treated as empty.
+
+    Args:
+        value: Raw field or attribute value.
+
+    Returns:
+        True if the value is blank or a known placeholder token.
+    """
+    if value is None:
+        return True
+
+    normalized = normalize_text(str(value)).lower().strip(".,;:-")
+    if not normalized:
+        return True
+
+    return normalized in PLACEHOLDER_VALUES
+
+
+def clean_text_field(value: Optional[str]) -> Optional[str]:
+    """Normalize a text field and drop placeholder supplier values.
+
+    Args:
+        value: Raw text from a CSV column.
+
+    Returns:
+        Cleaned text, or None when empty/placeholder.
+    """
+    cleaned = normalize_text(str(value or ""))
+    if not cleaned or is_placeholder_value(cleaned):
+        return None
+    return cleaned
 
 
 def normalize_attribute_value(key: str, value: str) -> str:
@@ -94,6 +156,26 @@ def normalize_attribute_value(key: str, value: str) -> str:
     return value.title()
 
 
+def _find_mentioned_sizes(text: str) -> set[str]:
+    """Find normalized size codes mentioned in catalog copy."""
+    padded = f" {text.lower()} "
+    mentioned: set[str] = set()
+
+    for size_code, terms in SIZE_LABEL_TERMS.items():
+        for term in terms:
+            if term in padded:
+                mentioned.add(size_code)
+                break
+
+    return mentioned
+
+
+def _find_mentioned_materials(text: str) -> set[str]:
+    """Find material keywords mentioned in catalog copy."""
+    text_lower = text.lower()
+    return {material for material in KNOWN_MATERIALS if material in text_lower}
+
+
 def detect_contradictions(
     title: str,
     description: str,
@@ -110,50 +192,110 @@ def detect_contradictions(
         attributes: Normalized product attributes dictionary.
 
     Returns:
-        List of contradiction details with field, expected, and actual values.
+        List of contradiction details with field, expected, actual, and severity.
     """
     contradictions: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
     title_lower = (title or "").lower()
     desc_lower = (description or "").lower()
+    combined_text = f"{title_lower} {desc_lower}".strip()
+
+    def add_contradiction(
+        field: str,
+        source: str,
+        expected: str,
+        actual: str,
+        severity: str = "high",
+    ) -> None:
+        key = (field.lower(), source, actual)
+        if key in seen:
+            return
+        seen.add(key)
+        contradictions.append({
+            "field": field,
+            "source": source,
+            "expected": expected,
+            "actual": actual,
+            "severity": severity,
+        })
 
     for key, value in attributes.items():
         if not value or key.lower() in ("weight", "dimensions", "upc", "ean"):
             continue
 
         value_lower = str(value).lower()
+        field_lower = key.lower()
 
-        # Check if attribute value contradicts title
-        if key.lower() in ("color", "colour") and value_lower:
-            # Look for any color mention in title that differs
+        if field_lower in ("color", "colour"):
             for check_field, check_text in [("title", title_lower), ("description", desc_lower)]:
-                if check_text and value_lower not in check_text:
-                    # Check if a different color from our known colors is mentioned
-                    known_colors = [
-                        "black", "white", "blue", "red", "green", "grey", "gray",
-                        "yellow", "pink", "purple", "orange", "brown", "navy",
-                        "silver", "gold", "beige", "tan",
-                    ]
-                    for color in known_colors:
-                        if color in check_text and color != value_lower:
-                            contradictions.append({
-                                "field": key,
-                                "source": check_field,
-                                "expected": str(value),
-                                "actual": f"'{color}' found in {check_field}",
-                            })
-                            break
+                if not check_text or value_lower in check_text:
+                    continue
 
-        elif key.lower() == "brand" and value_lower:
+                for color in KNOWN_COLORS:
+                    if color in check_text and color != value_lower:
+                        add_contradiction(
+                            key,
+                            check_field,
+                            str(value),
+                            f"'{color}' found in {check_field}",
+                        )
+                        break
+
+            if combined_text and value_lower not in combined_text:
+                if not any(color in combined_text for color in KNOWN_COLORS):
+                    add_contradiction(
+                        key,
+                        "title/description",
+                        str(value),
+                        f"Color '{value}' not mentioned in title or description",
+                        severity="medium",
+                    )
+
+        elif field_lower in ("size", "sizes"):
+            size_code = str(value).upper()
+            mentioned_sizes = _find_mentioned_sizes(combined_text)
+            conflicting_sizes = {size for size in mentioned_sizes if size != size_code}
+            if conflicting_sizes:
+                add_contradiction(
+                    key,
+                    "title/description",
+                    str(value),
+                    f"Conflicting size terms found: {', '.join(sorted(conflicting_sizes))}",
+                )
+
+        elif field_lower in ("material", "materials", "fabric"):
+            mentioned_materials = _find_mentioned_materials(combined_text)
+            if mentioned_materials and value_lower not in mentioned_materials:
+                conflicting = sorted(
+                    material for material in mentioned_materials if material != value_lower
+                )
+                if conflicting:
+                    add_contradiction(
+                        key,
+                        "title/description",
+                        str(value),
+                        f"Conflicting materials found: {', '.join(conflicting)}",
+                    )
+            elif combined_text and value_lower not in combined_text:
+                if not mentioned_materials:
+                    add_contradiction(
+                        key,
+                        "title/description",
+                        str(value),
+                        f"Material '{value}' not mentioned in title or description",
+                        severity="medium",
+                    )
+
+        elif field_lower == "brand" and value_lower:
             if title_lower and value_lower not in title_lower:
-                # Check if a different brand-like word is at the start of title
                 title_first_word = title_lower.split()[0] if title_lower.split() else ""
                 if title_first_word and title_first_word != value_lower and len(title_first_word) > 2:
-                    contradictions.append({
-                        "field": key,
-                        "source": "title",
-                        "expected": str(value),
-                        "actual": f"Title starts with '{title_first_word}' instead of brand",
-                    })
+                    add_contradiction(
+                        key,
+                        "title",
+                        str(value),
+                        f"Title starts with '{title_first_word}' instead of brand",
+                    )
 
     return contradictions
 
@@ -170,7 +312,7 @@ def calculate_content_score(description: str) -> dict[str, Any]:
     Returns:
         Dictionary with score (0-100) and quality indicators.
     """
-    if not description:
+    if not description or is_placeholder_value(description):
         return {"score": 0, "label": "Missing", "word_count": 0, "issues": ["No description"]}
 
     words = description.split()

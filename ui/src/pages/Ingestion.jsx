@@ -9,14 +9,10 @@ import { useState, useEffect, useRef } from "react";
 import {
   Upload,
   FileSpreadsheet,
-  AlertTriangle,
   CheckCircle2,
-  XCircle,
   RefreshCw,
   Info,
-  Clock,
-  Plus,
-  Edit2
+  Search,
 } from "lucide-react";
 import {
   uploadCSV,
@@ -25,56 +21,131 @@ import {
   resolveIssue
 } from "../api/client";
 import DataIssueCard from "../components/DataIssueCard";
+import PaginationBar from "../components/PaginationBar";
+import Select from "../components/Select";
+import SortableColumnHeader from "../components/SortableColumnHeader";
+import { useDebouncedValue } from "../lib/use-debounced-value";
+import { useToast } from "../lib/use-toast";
+import { useConfirm } from "../lib/use-confirm";
+
+const JOB_SORTABLE_COLUMNS = [
+  { key: "id", label: "Job ID" },
+  { key: "filename", label: "File Name" },
+  { key: "status", label: "Status" },
+  { key: "processed_rows", label: "Processed" },
+  { key: "new_products", label: "Created" },
+  { key: "updated_products", label: "Updated" },
+  { key: "issues_found", label: "Issues" },
+  { key: "started_at", label: "Date" },
+];
 
 export default function Ingestion() {
+  const { showToast } = useToast();
+  const { confirm } = useConfirm();
   const [jobs, setJobs] = useState([]);
   const [issues, setIssues] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [issuesLoading, setIssuesLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  const [jobSearchInput, setJobSearchInput] = useState("");
+  const jobSearchQuery = useDebouncedValue(jobSearchInput.trim(), 300);
+  const [jobStatusFilter, setJobStatusFilter] = useState("");
+  const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(10);
+  const [jobTotal, setJobTotal] = useState(0);
+  const [jobSortBy, setJobSortBy] = useState("started_at");
+  const [jobSortOrder, setJobSortOrder] = useState("desc");
 
-  async function loadData() {
+  const [issueSearchInput, setIssueSearchInput] = useState("");
+  const issueSearchQuery = useDebouncedValue(issueSearchInput.trim(), 300);
+  const [issueSeverityFilter, setIssueSeverityFilter] = useState("");
+  const [issueTypeFilter, setIssueTypeFilter] = useState("");
+  const [issuePage, setIssuePage] = useState(1);
+  const [issuePageSize, setIssuePageSize] = useState(10);
+  const [issueTotal, setIssueTotal] = useState(0);
+  const [issueSortBy, setIssueSortBy] = useState("created_at");
+  const [issueSortOrder, setIssueSortOrder] = useState("desc");
+
+  useEffect(() => {
+    setJobPage(1);
+  }, [jobSearchQuery, jobStatusFilter, jobPageSize, jobSortBy, jobSortOrder]);
+
+  useEffect(() => {
+    setIssuePage(1);
+  }, [issueSearchQuery, issueSeverityFilter, issueTypeFilter, issuePageSize, issueSortBy, issueSortOrder]);
+
+  useEffect(() => {
+    loadJobs();
+  }, [jobPage, jobPageSize, jobSearchQuery, jobStatusFilter, jobSortBy, jobSortOrder]);
+
+  useEffect(() => {
+    loadIssues();
+  }, [issuePage, issuePageSize, issueSearchQuery, issueSeverityFilter, issueTypeFilter, issueSortBy, issueSortOrder]);
+
+  async function loadJobs() {
     try {
-      setLoading(true);
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
+      setJobsLoading(true);
+      const data = await fetchIngestionJobs({
+        skip: (jobPage - 1) * jobPageSize,
+        limit: jobPageSize,
+        search: jobSearchQuery || undefined,
+        status: jobStatusFilter || undefined,
+        sort_by: jobSortBy,
+        sort_order: jobSortOrder,
+      });
+      setJobs(data.items);
+      setJobTotal(data.total);
+
+      const maxPage = Math.max(1, Math.ceil(data.total / jobPageSize));
+      if (jobPage > maxPage) {
+        setJobPage(maxPage);
+      }
     } catch (err) {
-      showToast("Failed to load ingestion data", "error");
+      setJobs([]);
+      setJobTotal(0);
+      showToast(err.message || "Failed to load ingestion jobs", "error");
     } finally {
-      setLoading(false);
+      setJobsLoading(false);
+    }
+  }
+
+  async function loadIssues() {
+    try {
+      setIssuesLoading(true);
+      const data = await fetchAllIssues({
+        resolved: false,
+        skip: (issuePage - 1) * issuePageSize,
+        limit: issuePageSize,
+        search: issueSearchQuery || undefined,
+        severity: issueSeverityFilter || undefined,
+        issue_type: issueTypeFilter || undefined,
+        sort_by: issueSortBy,
+        sort_order: issueSortOrder,
+      });
+      setIssues(data.items);
+      setIssueTotal(data.total);
+
+      const maxPage = Math.max(1, Math.ceil(data.total / issuePageSize));
+      if (issuePage > maxPage) {
+        setIssuePage(maxPage);
+      }
+    } catch (err) {
+      setIssues([]);
+      setIssueTotal(0);
+      showToast(err.message || "Failed to load quality issues", "error");
+    } finally {
+      setIssuesLoading(false);
     }
   }
 
   async function handleRefresh() {
-    try {
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
-      showToast("Data refreshed", "info");
-    } catch (err) {
-      showToast("Failed to refresh data", "error");
-    }
+    await Promise.all([loadJobs(), loadIssues()]);
+    showToast("Data refreshed", "info");
   }
 
-  function showToast(message, type = "info") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  }
-
-  // Handle drag events
   function handleDrag(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -85,7 +156,6 @@ export default function Ingestion() {
     }
   }
 
-  // Handle drop event
   async function handleDrop(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -96,7 +166,6 @@ export default function Ingestion() {
     }
   }
 
-  // Handle manual file selection
   async function handleFileSelect(e) {
     if (e.target.files && e.target.files[0]) {
       await processUploadedFile(e.target.files[0]);
@@ -109,11 +178,23 @@ export default function Ingestion() {
       return;
     }
 
+    const confirmed = await confirm({
+      title: "Upload Product Feed",
+      message: `Upload "${file.name}" and start the ingestion pipeline? This will create or update products in your catalog.`,
+      confirmLabel: "Upload",
+      cancelLabel: "Cancel",
+      variant: "primary",
+    });
+    if (!confirmed) {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
     try {
       setUploading(true);
       showToast(`Uploading ${file.name}...`, "info");
       const result = await uploadCSV(file);
-      
+
       if (result.status === "completed") {
         showToast(`Successfully processed: ${result.processed_rows} rows`, "success");
       } else if (result.status === "failed") {
@@ -122,13 +203,9 @@ export default function Ingestion() {
         showToast("CSV file uploaded for processing", "info");
       }
 
-      // Refresh data
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
+      setJobPage(1);
+      setIssuePage(1);
+      await Promise.all([loadJobs(), loadIssues()]);
     } catch (err) {
       showToast(err.message || "Failed to upload CSV file", "error");
     } finally {
@@ -137,15 +214,22 @@ export default function Ingestion() {
     }
   }
 
-  async function handleResolveIssue(issueId) {
+  async function handleResolveIssue(issue) {
+    const confirmed = await confirm({
+      title: "Resolve Data Issue",
+      message: `Mark this issue as resolved?\n\n${issue.description}`,
+      confirmLabel: "Resolve",
+      cancelLabel: "Cancel",
+      variant: "primary",
+    });
+    if (!confirmed) return;
+
     try {
-      await resolveIssue(issueId);
+      await resolveIssue(issue.id);
       showToast("Issue marked as resolved", "success");
-      
-      // Update local issue state
-      setIssues(prev => prev.filter(i => i.id !== issueId));
+      await loadIssues();
     } catch (err) {
-      showToast("Failed to resolve issue", "error");
+      showToast(err.message || "Failed to resolve issue", "error");
     }
   }
 
@@ -162,7 +246,22 @@ export default function Ingestion() {
     }
   }
 
-  if (loading && jobs.length === 0 && issues.length === 0) {
+  function handleJobSort(nextSortBy, nextSortOrder) {
+    setJobSortBy(nextSortBy);
+    setJobSortOrder(nextSortOrder);
+    setJobPage(1);
+  }
+
+  function handleIssueSortChange(value) {
+    const [nextSortBy, nextSortOrder] = value.split(":");
+    setIssueSortBy(nextSortBy);
+    setIssueSortOrder(nextSortOrder);
+    setIssuePage(1);
+  }
+
+  const initialLoading = jobsLoading && issuesLoading && jobs.length === 0 && issues.length === 0;
+
+  if (initialLoading) {
     return (
       <div className="loading">
         <div className="spinner" />
@@ -185,14 +284,12 @@ export default function Ingestion() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 24 }}>
-        {/* Left Column: Upload & History */}
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          {/* CSV File Drag & Drop Zone */}
           <div className="card">
             <div className="card-header">
               <h3>Upload Product Feed</h3>
             </div>
-            
+
             <div
               className={`upload-zone ${dragActive ? "dragover" : ""}`}
               onDragEnter={handleDrag}
@@ -227,7 +324,6 @@ export default function Ingestion() {
               )}
             </div>
 
-            {/* CSV Format Guidance */}
             <div
               style={{
                 marginTop: 20,
@@ -266,64 +362,121 @@ export default function Ingestion() {
             </div>
           </div>
 
-          {/* Recent Ingestion Jobs */}
           <div className="card">
             <div className="card-header">
               <h3>Ingestion History</h3>
             </div>
-            
-            {jobs.length > 0 ? (
-              <div className="table-container">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Job ID</th>
-                      <th>File Name</th>
-                      <th>Status</th>
-                      <th>Processed</th>
-                      <th>Created</th>
-                      <th>Updated</th>
-                      <th>Issues</th>
-                      <th>Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {jobs.map((job) => (
-                      <tr key={job.id}>
-                        <td style={{ fontFamily: "monospace", fontWeight: 600, color: "var(--text-secondary)" }}>
-                          #{job.id}
-                        </td>
-                        <td
-                          style={{
-                            maxWidth: 160,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            fontWeight: 500
-                          }}
-                          title={job.filename}
-                        >
-                          {job.filename}
-                        </td>
-                        <td>{getStatusBadge(job.status)}</td>
-                        <td>{job.processed_rows} / {job.total_rows}</td>
-                        <td style={{ color: "var(--accent-green-light)" }}>
-                          {job.new_products > 0 ? `+${job.new_products}` : 0}
-                        </td>
-                        <td style={{ color: "var(--accent-blue-light)" }}>
-                          {job.updated_products}
-                        </td>
-                        <td style={{ color: job.issues_found > 0 ? "var(--accent-orange)" : "inherit" }}>
-                          {job.issues_found}
-                        </td>
-                        <td style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                          {new Date(job.started_at).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+
+            <div className="toolbar" style={{ marginBottom: 12 }}>
+              <div className="search-input">
+                <div style={{ position: "relative" }}>
+                  <Search
+                    size={16}
+                    style={{
+                      position: "absolute",
+                      left: 12,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      color: "var(--text-muted)",
+                    }}
+                  />
+                  <input
+                    type="search"
+                    placeholder="Search by filename..."
+                    value={jobSearchInput}
+                    onChange={(e) => setJobSearchInput(e.target.value)}
+                    style={{ paddingLeft: 36 }}
+                  />
+                </div>
               </div>
+              <Select
+                value={jobStatusFilter}
+                onChange={(value) => {
+                  setJobStatusFilter(value);
+                  setJobPage(1);
+                }}
+                placeholder="All Statuses"
+                ariaLabel="Filter jobs by status"
+                options={[
+                  { value: "", label: "All Statuses" },
+                  { value: "completed", label: "Completed" },
+                  { value: "failed", label: "Failed" },
+                  { value: "processing", label: "Processing" },
+                  { value: "pending", label: "Pending" },
+                ]}
+              />
+            </div>
+
+            {jobsLoading ? (
+              <div className="loading"><div className="spinner" />Loading jobs...</div>
+            ) : jobs.length > 0 ? (
+              <>
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        {JOB_SORTABLE_COLUMNS.map((column) => (
+                          <SortableColumnHeader
+                            key={column.key}
+                            columnKey={column.key}
+                            label={column.label}
+                            sortBy={jobSortBy}
+                            sortOrder={jobSortOrder}
+                            onSort={handleJobSort}
+                          />
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {jobs.map((job) => (
+                        <tr key={job.id}>
+                          <td style={{ fontFamily: "monospace", fontWeight: 600, color: "var(--text-secondary)" }}>
+                            #{job.id}
+                          </td>
+                          <td
+                            style={{
+                              maxWidth: 160,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              fontWeight: 500
+                            }}
+                            title={job.filename}
+                          >
+                            {job.filename}
+                          </td>
+                          <td>{getStatusBadge(job.status)}</td>
+                          <td>{job.processed_rows} / {job.total_rows}</td>
+                          <td style={{ color: "var(--accent-green-light)" }}>
+                            {job.new_products > 0 ? `+${job.new_products}` : 0}
+                          </td>
+                          <td style={{ color: "var(--accent-blue-light)" }}>
+                            {job.updated_products}
+                          </td>
+                          <td style={{ color: job.issues_found > 0 ? "var(--accent-orange)" : "inherit" }}>
+                            {job.issues_found}
+                          </td>
+                          <td style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                            {new Date(job.started_at).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <PaginationBar
+                  page={jobPage}
+                  pageSize={jobPageSize}
+                  total={jobTotal}
+                  onPageChange={setJobPage}
+                  onPageSizeChange={(size) => {
+                    setJobPageSize(size);
+                    setJobPage(1);
+                  }}
+                  itemLabel="jobs"
+                  pageSizeOptions={[5, 10, 15, 25]}
+                />
+              </>
             ) : (
               <div className="empty-state">
                 <FileSpreadsheet size={40} />
@@ -334,32 +487,102 @@ export default function Ingestion() {
           </div>
         </div>
 
-        {/* Right Column: Flags & Contradictions */}
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <div className="card" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
             <div className="card-header" style={{ marginBottom: 12 }}>
               <h3>Open Quality Issues</h3>
-              <span className={`badge ${issues.length > 0 ? "badge-high" : "badge-active"}`}>
-                {issues.length} Flagged
+              <span className={`badge ${issueTotal > 0 ? "badge-high" : "badge-active"}`}>
+                {issueTotal} Flagged
               </span>
             </div>
-            
-            <p style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: 16 }}>
+
+            <p style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: 12 }}>
               Review contradiction flags and missing catalog details flagged during CSV normalization.
             </p>
+
+            <div className="toolbar" style={{ marginBottom: 12 }}>
+              <div className="search-input">
+                <div style={{ position: "relative" }}>
+                  <Search
+                    size={16}
+                    style={{
+                      position: "absolute",
+                      left: 12,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      color: "var(--text-muted)",
+                    }}
+                  />
+                  <input
+                    type="search"
+                    placeholder="Search issues, SKU, or title..."
+                    value={issueSearchInput}
+                    onChange={(e) => setIssueSearchInput(e.target.value)}
+                    style={{ paddingLeft: 36 }}
+                  />
+                </div>
+              </div>
+              <Select
+                value={issueSeverityFilter}
+                onChange={(value) => {
+                  setIssueSeverityFilter(value);
+                  setIssuePage(1);
+                }}
+                placeholder="All Severities"
+                ariaLabel="Filter issues by severity"
+                options={[
+                  { value: "", label: "All Severities" },
+                  { value: "critical", label: "Critical" },
+                  { value: "high", label: "High" },
+                  { value: "medium", label: "Medium" },
+                  { value: "low", label: "Low" },
+                ]}
+              />
+              <Select
+                value={issueTypeFilter}
+                onChange={(value) => {
+                  setIssueTypeFilter(value);
+                  setIssuePage(1);
+                }}
+                placeholder="All Issue Types"
+                ariaLabel="Filter issues by type"
+                options={[
+                  { value: "", label: "All Issue Types" },
+                  { value: "missing_description", label: "Missing Description" },
+                  { value: "thin_content", label: "Thin Content" },
+                  { value: "attribute_contradiction", label: "Attribute Contradiction" },
+                  { value: "missing_attributes", label: "Missing Attributes" },
+                  { value: "duplicate_title", label: "Duplicate Title" },
+                  { value: "price_anomaly", label: "Price Anomaly" },
+                ]}
+              />
+              <Select
+                value={`${issueSortBy}:${issueSortOrder}`}
+                onChange={handleIssueSortChange}
+                ariaLabel="Sort quality issues"
+                options={[
+                  { value: "created_at:desc", label: "Newest First" },
+                  { value: "created_at:asc", label: "Oldest First" },
+                  { value: "severity:desc", label: "Highest Severity" },
+                  { value: "severity:asc", label: "Lowest Severity" },
+                ]}
+              />
+            </div>
 
             <div
               style={{
                 flex: 1,
                 overflowY: "auto",
-                maxHeight: 700,
+                maxHeight: 520,
                 paddingRight: 4,
                 display: "flex",
                 flexDirection: "column",
                 gap: 12
               }}
             >
-              {issues.length > 0 ? (
+              {issuesLoading ? (
+                <div className="loading"><div className="spinner" />Loading issues...</div>
+              ) : issues.length > 0 ? (
                 issues.map((issue) => (
                   <DataIssueCard
                     key={issue.id}
@@ -371,22 +594,29 @@ export default function Ingestion() {
                 <div className="empty-state" style={{ margin: "auto 0" }}>
                   <CheckCircle2 size={42} style={{ color: "var(--accent-green)" }} />
                   <h3>Clean Catalog!</h3>
-                  <p>No active data issues or attribute contradictions found.</p>
+                  <p>No active data issues match your filters.</p>
                 </div>
               )}
             </div>
+
+            {!issuesLoading && issueTotal > 0 && (
+              <PaginationBar
+                page={issuePage}
+                pageSize={issuePageSize}
+                total={issueTotal}
+                onPageChange={setIssuePage}
+                onPageSizeChange={(size) => {
+                  setIssuePageSize(size);
+                  setIssuePage(1);
+                }}
+                itemLabel="issues"
+                pageSizeOptions={[5, 10, 15, 25]}
+              />
+            )}
           </div>
         </div>
       </div>
 
-      {/* Toast Feedback */}
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast ${toast.type}`}>
-            {toast.message}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

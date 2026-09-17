@@ -10,6 +10,8 @@ from app.utils.helpers import (
     normalize_attribute_value,
     detect_contradictions,
     calculate_content_score,
+    is_placeholder_value,
+    clean_text_field,
 )
 
 
@@ -59,6 +61,24 @@ class TestNormalizeAttributeValue:
         assert normalize_attribute_value("size", "") == ""
 
 
+class TestPlaceholderValues:
+    """Tests for placeholder supplier value handling."""
+
+    def test_detects_common_placeholders(self):
+        assert is_placeholder_value("n/a") is True
+        assert is_placeholder_value("N/A") is True
+        assert is_placeholder_value("tbd") is True
+        assert is_placeholder_value("-") is True
+
+    def test_keeps_real_values(self):
+        assert is_placeholder_value("Black") is False
+        assert is_placeholder_value("Premium leather wallet") is False
+
+    def test_clean_text_field_drops_placeholder(self):
+        assert clean_text_field("n/a") is None
+        assert clean_text_field("  Real description  ") == "Real description"
+
+
 class TestDetectContradictions:
     """Tests for contradiction detection between product fields."""
 
@@ -86,6 +106,22 @@ class TestDetectContradictions:
             attributes={},
         )
         assert len(result) == 0
+
+    def test_color_not_mentioned_in_copy(self):
+        result = detect_contradictions(
+            title="Nike Air Max 90 Running Shoes",
+            description="Classic running shoe with visible Air cushioning.",
+            attributes={"color": "White"},
+        )
+        assert any("not mentioned" in item["actual"] for item in result)
+
+    def test_size_conflict_detected(self):
+        result = detect_contradictions(
+            title="Levi's 501 Original Fit Jeans Medium",
+            description="",
+            attributes={"size": "L"},
+        )
+        assert any(item["field"] == "size" for item in result)
 
 
 class TestCalculateContentScore:
@@ -122,3 +158,8 @@ class TestCalculateContentScore:
             "Buy now this high quality product. Best quality guaranteed. Click here."
         )
         assert result["score"] < 80
+
+    def test_placeholder_description_treated_as_missing(self):
+        result = calculate_content_score("n/a")
+        assert result["score"] == 0
+        assert result["label"] == "Missing"
