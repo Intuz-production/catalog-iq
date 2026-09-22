@@ -48,7 +48,7 @@ export default function QualityIssuesDialog({
   onAcceptAll,
   onIgnoreAll,
 }) {
-  const isWaiting = loading || isAnalyzing;
+  const isWaiting = loading;
   const isBusy = busyProductId !== null;
   const [showPolish, setShowPolish] = useState(false);
 
@@ -111,11 +111,11 @@ export default function QualityIssuesDialog({
           <div className="product-detail-header-main">
             <div className="product-detail-title-row">
               <h2 id="quality-issues-title">Quality Issues</h2>
-              {!isWaiting ? (
+              {!isWaiting && (
                 <span className={`badge ${visibleTotal > 0 ? "badge-high" : "badge-active"}`}>
                   {visibleTotal} Open
                 </span>
-              ) : null}
+              )}
             </div>
             <p className="product-detail-subtitle">
               Grouped by product. Apply a fix, write your own value, or ignore
@@ -137,14 +137,20 @@ export default function QualityIssuesDialog({
           {isWaiting ? (
             <div className="quality-issues-dialog-loading">
               <div className="spinner" />
-              <p>
-                {isAnalyzing
-                  ? "AI analysis in progress. Review will open when it finishes..."
-                  : "Loading quality issues..."}
-              </p>
+              <p>Loading quality issues...</p>
             </div>
           ) : (
             <>
+              {isAnalyzing ? (
+                <div className="quality-issues-analyzing-banner">
+                  <span
+                    className="spinner"
+                    aria-hidden="true"
+                    style={{ width: 14, height: 14, borderWidth: 2, flexShrink: 0 }}
+                  />
+                  AI analysis in progress — more issues may appear as products are processed.
+                </div>
+              ) : null}
               {polishCount > 0 ? (
                 <label className="quality-issues-polish-toggle">
                   <input
@@ -215,9 +221,11 @@ export default function QualityIssuesDialog({
               ) : (
                 <div className="empty-state rewrite-review-empty">
                   <AlertTriangle size={40} />
-                  <h3>No Open Quality Issues</h3>
+                  <h3>{isAnalyzing ? "Analyzing..." : "No Open Quality Issues"}</h3>
                   <p>
-                    {polishCount > 0 && !showPolish
+                    {isAnalyzing
+                      ? "Issues will appear here as AI analysis completes."
+                      : polishCount > 0 && !showPolish
                       ? "Only low-severity polish suggestions remain. Turn on Show polish suggestions to review them."
                       : "Rule and AI flags for this file are clear, or already reviewed."}
                   </p>

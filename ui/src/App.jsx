@@ -7,7 +7,7 @@ import ProtectedRoute from "./components/auth/protected-route";
 import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import Ingestion from "./pages/Ingestion";
-import Competitors from "./pages/Competitors";
+// import Competitors from "./pages/Competitors";
 import Login from "./pages/Login";
 
 export default function App() {
@@ -26,7 +26,7 @@ export default function App() {
               <Route path="/products/:jobId" element={<Products />} />
               <Route path="/ingestion" element={<Navigate to="/products" replace />} />
               <Route path="/content" element={<Navigate to="/products" replace />} />
-              <Route path="/competitors" element={<Competitors />} />
+              {/* <Route path="/competitors" element={<Competitors />} /> */}
             </Route>
           </Route>
         </Routes>

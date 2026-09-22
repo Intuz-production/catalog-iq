@@ -4,7 +4,7 @@
  * Displays products in a server-driven sortable table with pagination.
  */
 
-import { Eye, Sparkles, Trash2, AlertTriangle } from "lucide-react";
+import { Eye, Trash2, AlertTriangle } from "lucide-react";
 import PaginationBar from "./PaginationBar";
 import SortableColumnHeader from "./SortableColumnHeader";
 
@@ -13,6 +13,7 @@ const STATUS_CLASSES = {
   draft: "badge-draft",
   flagged: "badge-flagged",
   archived: "badge-archived",
+  processing: "badge-processing",
 };
 
 const SORTABLE_COLUMNS = [
@@ -33,7 +34,6 @@ function isAiRowLoading(product) {
 
 export default function ProductTable({
   products = [],
-  onGenerateContent,
   onDelete,
   onViewDetails,
   loading = false,
@@ -112,30 +112,13 @@ export default function ProductTable({
                   </td>
                   <td>
                     <span className="product-status-cell">
-                      <span className={`badge ${STATUS_CLASSES[product.status] || "badge-draft"}`}>
-                        {product.status}
-                      </span>
                       {aiLoading ? (
-                        <span
-                          className="product-ai-row-loader"
-                          title={
-                            product.ai_analysis_status === "analyzing"
-                              ? "AI analyzing this product"
-                              : "Waiting for AI analysis"
-                          }
-                          aria-label={
-                            product.ai_analysis_status === "analyzing"
-                              ? "AI analyzing this product"
-                              : "Waiting for AI analysis"
-                          }
-                        >
-                          <span
-                            className="spinner"
-                            aria-hidden="true"
-                            style={{ width: 12, height: 12, borderWidth: 2, margin: 0 }}
-                          />
+                        <span className="badge badge-processing">Processing</span>
+                      ) : (
+                        <span className={`badge ${STATUS_CLASSES[product.status] || "badge-draft"}`}>
+                          {product.status}
                         </span>
-                      ) : null}
+                      )}
                     </span>
                   </td>
                   <td>
@@ -158,22 +141,6 @@ export default function ProductTable({
                           disabled={aiLoading}
                         >
                           <Eye size={14} />
-                        </button>
-                      )}
-                      {onGenerateContent && (
-                        <button
-                          className={`btn btn-sm ${product.generated_description ? "btn-ghost" : "btn-primary"}`}
-                          onClick={() => onGenerateContent(product.id)}
-                          title={
-                            aiLoading
-                              ? "AI analysis in progress"
-                              : product.generated_description
-                                ? "Regenerate SEO content"
-                                : "Generate SEO content"
-                          }
-                          disabled={aiLoading}
-                        >
-                          <Sparkles size={14} />
                         </button>
                       )}
                       {onDelete && (

@@ -16,9 +16,11 @@ from app.models.schemas import (
     ProductStatus, ProductSortField, SortOrder,
     ProductCreate, ProductUpdate,
     ProductResponse, ProductListResponse, DataIssueResponse, DashboardStats,
+    AiThoughtRequest, AiThoughtResponse, AiThoughtChange,
 )
 from app.services import product_service, ingestion_service
 from app.services import woocommerce_export_service
+from app.services.ingestion_ai_service import run_thought_rewrite
 
 logger = logging.getLogger("catalogiq.routes.products")
 
@@ -29,7 +31,7 @@ router = APIRouter(prefix="/api/products", tags=["Products"])
 def list_products(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
-    status: Optional[ProductStatus] = Query(None, description="Filter by status"),
+    status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search in title, SKU, brand"),
     category: Optional[str] = Query(None, description="Filter by category"),
     ingestion_job_id: Optional[int] = Query(
@@ -69,9 +71,21 @@ def list_products(
 
 
 @router.get("/categories", response_model=list[str])
-def list_categories(db: Session = Depends(get_db)) -> list[str]:
+def list_categories(
+    ingestion_job_id: Optional[int] = Query(None, description="Limit to job"),
+    db: Session = Depends(get_db),
+) -> list[str]:
     """Get all distinct product categories."""
-    return product_service.get_categories(db)
+    return product_service.get_categories(db, ingestion_job_id=ingestion_job_id)
+
+
+@router.get("/statuses", response_model=list[str])
+def list_statuses(
+    ingestion_job_id: Optional[int] = Query(None, description="Limit to job"),
+    db: Session = Depends(get_db),
+) -> list[str]:
+    """Get all distinct product statuses that actually exist in the database."""
+    return product_service.get_statuses(db, ingestion_job_id=ingestion_job_id)
 
 
 @router.get("/stats", response_model=DashboardStats)
@@ -82,7 +96,7 @@ def get_stats(db: Session = Depends(get_db)) -> DashboardStats:
 
 @router.get("/export/woocommerce")
 def export_woocommerce_csv(
-    status: Optional[ProductStatus] = Query(None, description="Filter by status"),
+    status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search in title, SKU, brand"),
     category: Optional[str] = Query(None, description="Filter by category"),
     ingestion_job_id: Optional[int] = Query(
@@ -185,3 +199,38 @@ def get_product_issues(
     if not product:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
     return [DataIssueResponse.model_validate(i) for i in product.issues]
+
+
+@router.post("/{product_id}/ai-thought", response_model=AiThoughtResponse)
+def ai_thought(
+    product_id: int,
+    body: AiThoughtRequest,
+    db: Session = Depends(get_db),
+) -> AiThoughtResponse:
+    """Apply a free-text merchant instruction to a product via AI and return proposed diffs.
+
+    Does NOT persist any changes — the caller decides which diffs to accept.
+    """
+    product = product_service.get_product_by_id(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+
+    try:
+        result = run_thought_rewrite(product, body.prompt.strip())
+    except Exception as exc:
+        logger.warning("AI thought failed for product %s: %s", product_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="AI service unavailable. Please try again later.",
+        ) from exc
+
+    changes = [
+        AiThoughtChange(
+            field=c["field"],
+            before=c.get("before", ""),
+            after=c["after"],
+            reason=c.get("reason", ""),
+        )
+        for c in result.get("changes") or []
+    ]
+    return AiThoughtResponse(changes=changes, error=result.get("error"))

@@ -155,6 +155,9 @@ class NormalizedCsvRow:
     raw_data: dict
     title_from_sku: bool
     unparsed_price: bool
+    stock: Optional[int] = None
+    in_stock: bool = True
+    image_url: Optional[str] = None
 
 INGESTION_JOB_SORT_COLUMNS = {
     IngestionJobSortField.ID: IngestionJob.id,
@@ -190,6 +193,9 @@ COLUMN_MAPPINGS: dict[str, list[str]] = {
     "weight": ["weight", "item_weight", "shipping_weight"],
     "upc": ["upc", "ean", "barcode", "gtin"],
     "specifications": ["specifications", "specs", "spec", "specification"],
+    "stock": ["stock", "quantity", "qty", "inventory", "stock_quantity", "stock_qty", "count"],
+    "in_stock": ["in_stock", "in_stock?", "stock_status", "is_in_stock", "availability", "available"],
+    "image_url": ["image_url", "image", "images", "img", "photo", "picture", "thumbnail", "featured_image", "product_image"],
 }
 
 STANDARD_FIELDS: tuple[str, ...] = tuple(COLUMN_MAPPINGS.keys())
@@ -464,6 +470,31 @@ def _normalize_csv_row(
     if currency_text:
         currency = currency_text.upper()
 
+    stock: Optional[int] = None
+    if "stock" in column_map and column_map["stock"] in row.index:
+        raw_stock = row[column_map["stock"]]
+        if not pd.isna(raw_stock):
+            stock_text = str(raw_stock).strip()
+            if stock_text:
+                try:
+                    stock = int(float(stock_text))
+                except (ValueError, TypeError):
+                    stock = None
+
+    in_stock = True
+    if "in_stock" in column_map and column_map["in_stock"] in row.index:
+        raw_in_stock = row[column_map["in_stock"]]
+        if not pd.isna(raw_in_stock):
+            in_stock_text = str(raw_in_stock).strip().lower()
+            if in_stock_text in ("0", "false", "no", "outofstock", "out of stock"):
+                in_stock = False
+            elif in_stock_text in ("1", "true", "yes", "instock", "in stock"):
+                in_stock = True
+    elif stock is not None:
+        in_stock = stock > 0
+
+    image_url = _mapped_cell(row, column_map, "image_url")
+
     return NormalizedCsvRow(
         sku=sku,
         title=title or sku,
@@ -476,6 +507,9 @@ def _normalize_csv_row(
         raw_data=_raw_data_from_row(row),
         title_from_sku=title_from_sku,
         unparsed_price=unparsed_price,
+        stock=stock,
+        in_stock=in_stock,
+        image_url=image_url,
     ), None
 
 
@@ -495,6 +529,12 @@ def _product_update_from_row(
         updates["brand"] = normalized.brand
     if normalized.price is not None:
         updates["price"] = normalized.price
+    if normalized.stock is not None:
+        updates["stock"] = normalized.stock
+    if normalized.in_stock is not None:
+        updates["in_stock"] = normalized.in_stock
+    if normalized.image_url:
+        updates["image_url"] = normalized.image_url
     if normalized.attributes:
         merged = dict(existing.attributes or {})
         merged.update(normalized.attributes)
@@ -658,6 +698,9 @@ def process_csv(
                             brand=normalized.brand,
                             price=normalized.price,
                             currency=normalized.currency,
+                            stock=normalized.stock,
+                            in_stock=normalized.in_stock,
+                            image_url=normalized.image_url,
                             attributes=normalized.attributes,
                         ),
                     )
@@ -1259,7 +1302,10 @@ def get_data_issues(
     return issues, total
 
 
-PRODUCT_REWRITE_FIELDS = frozenset({"title", "description", "category", "brand", "price"})
+PRODUCT_REWRITE_FIELDS = frozenset({
+    "title", "description", "category", "brand", "price",
+    "stock", "in_stock", "image_url",
+})
 ATTRIBUTE_FIELD_PREFIX = "attributes."
 LEGACY_ATTRIBUTE_FIELDS = frozenset({"color", "size", "material", "weight", "upc"})
 
@@ -1333,6 +1379,25 @@ def _apply_field_value(product: Product, field_name: str, value: Optional[str]) 
                 product.price = float(str(value).strip())
             except ValueError as exc:
                 raise ValueError("Price must be a number.") from exc
+            return
+        if normalized_name == "stock":
+            if value is None or str(value).strip() == "":
+                product.stock = None
+                return
+            try:
+                product.stock = int(float(str(value).strip()))
+            except ValueError as exc:
+                raise ValueError("Stock must be an integer.") from exc
+            return
+        if normalized_name == "in_stock":
+            if value is None or str(value).strip() == "":
+                product.in_stock = True
+                return
+            val_str = str(value).strip().lower()
+            if val_str in ("false", "0", "no", "outofstock", "out of stock"):
+                product.in_stock = False
+            else:
+                product.in_stock = True
             return
         setattr(product, normalized_name, None if value is None else str(value).strip() or None)
         return

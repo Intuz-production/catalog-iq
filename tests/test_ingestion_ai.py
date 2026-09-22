@@ -774,6 +774,28 @@ class TestRunIngestionAiJob:
         assert live.ai_analysis_status == "done"
         verify.close()
 
+    def test_run_ingestion_ai_job_triggers_seo_generation(self, db_session):
+        session, product, job = db_session
+        engine = session.get_bind()
+        product_id = product.id
+        job_id = job.id
+
+        with patch(
+            "app.services.ingestion_ai_service.SessionLocal",
+            sessionmaker(bind=engine),
+        ), patch(
+            "app.services.ingestion_ai_service.request_product_rewrite",
+            return_value=SAMPLE_REWRITE,
+        ), patch(
+            "app.services.ingestion_ai_service.generate_content_for_product",
+        ) as mock_seo_gen:
+            run_ingestion_ai_job(job_id, [product_id])
+
+        mock_seo_gen.assert_called_once()
+        call_kwargs = mock_seo_gen.call_args.kwargs
+        assert call_kwargs["product_id"] == product_id
+        assert call_kwargs["include_seo"] is True
+
     def test_missing_llm_key_fails_job_once(self, db_session):
         session, product, job = db_session
         engine = session.get_bind()
@@ -870,3 +892,89 @@ class TestProcessCsvAnalyzing:
         stored = session.query(Product).filter(Product.sku == "MAP-001").first()
         assert stored is not None
         assert stored.title == "Mapped Lamp"
+
+
+class TestWooCommerceFieldsIngestionAndAi:
+    """Validate stock, in_stock, and image_url CSV parsing and AI rewrite sanitization."""
+
+    def test_csv_ingestion_populates_woocommerce_fields(self, db_session):
+        session, _product, _job = db_session
+        csv_bytes = (
+            b"sku,title,description,price,quantity,in_stock,image\n"
+            b"WOO-001,Wireless Mouse,Ergonomic mouse,29.99,45,instock,https://cdn.example.com/mouse.jpg\n"
+        )
+        result, product_ids = ingestion_service.process_csv(
+            session, csv_bytes, "woo_test.csv"
+        )
+        assert result.status == "analyzing"
+        assert len(product_ids) == 1
+        stored = session.query(Product).filter(Product.sku == "WOO-001").first()
+        assert stored is not None
+        assert stored.stock == 45
+        assert stored.in_stock is True
+        assert stored.image_url == "https://cdn.example.com/mouse.jpg"
+
+    def test_sanitize_rewrite_extracts_known_woocommerce_fields(self):
+        product = Product(
+            sku="SHIRT-1",
+            title="Cotton Shirt",
+            description="Blue shirt in stock: 15 units",
+            price=25.0,
+            stock=None,
+            in_stock=True,
+            image_url=None,
+            raw_data={"sku": "SHIRT-1", "stock_qty": 15, "img_src": "https://img.example.com/blue.png"},
+            attributes={"color": "Blue"},
+        )
+        rewrite = {
+            "title": "Classic Cotton Shirt",
+            "stock": 15,
+            "in_stock": True,
+            "image_url": "https://img.example.com/blue.png",
+        }
+        sanitized = sanitize_rewrite(product, rewrite)
+        assert sanitized["stock"] == "15"
+        assert sanitized["in_stock"] == "true"
+        assert sanitized["image_url"] == "https://img.example.com/blue.png"
+
+    def test_sanitize_rewrite_rejects_hallucinated_stock_and_image(self):
+        product = Product(
+            sku="MUG-1",
+            title="Ceramic Mug",
+            description="White mug",
+            price=12.0,
+            stock=None,
+            in_stock=True,
+            image_url=None,
+            raw_data={"sku": "MUG-1", "title": "Ceramic Mug"},
+            attributes={},
+        )
+        # AI tries to invent 999 stock and a fake image url
+        rewrite = {
+            "title": "White Ceramic Mug",
+            "stock": 999,
+            "in_stock": True,
+            "image_url": "https://fake-images.org/mug.jpg",
+        }
+        sanitized = sanitize_rewrite(product, rewrite)
+        assert sanitized["stock"] is None  # Hallucinated number 999 rejected
+        assert sanitized["image_url"] is None  # Hallucinated image rejected
+
+    def test_apply_field_value_handles_stock_and_in_stock(self):
+        product = Product(sku="TEST-1", title="Test Item")
+        # Test stock
+        ingestion_service._apply_field_value(product, "stock", "50")
+        assert product.stock == 50
+        ingestion_service._apply_field_value(product, "stock", "")
+        assert product.stock is None
+
+        # Test in_stock
+        ingestion_service._apply_field_value(product, "in_stock", "false")
+        assert product.in_stock is False
+        ingestion_service._apply_field_value(product, "in_stock", "true")
+        assert product.in_stock is True
+
+        # Test image_url
+        ingestion_service._apply_field_value(product, "image_url", "https://img.com/p.jpg")
+        assert product.image_url == "https://img.com/p.jpg"
+

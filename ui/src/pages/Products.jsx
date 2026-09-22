@@ -8,20 +8,27 @@ import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Search, Download, AlertTriangle, Pencil } from "lucide-react";
 import {
-  fetchProducts, fetchProduct, fetchCategories, deleteProduct,
-  generateSingleContent, fetchProductIssues, updateProduct,
+  fetchProducts, fetchProduct, fetchCategories, fetchStatuses, deleteProduct,
+  fetchProductIssues, updateProduct,
   exportWooCommerceCsv, fetchIngestionJob, renameIngestionJob,
   fetchAllIssues, reviewIssue, acceptProductIssues,
 } from "../api/client";
 import ProductTable from "../components/ProductTable";
 import ProductDetailDialog from "../components/ProductDetailDialog";
-import GenerateContentDialog from "../components/GenerateContentDialog";
 import QualityIssuesDialog from "../components/QualityIssuesDialog";
 import Select from "../components/Select";
 import { useToast } from "../lib/use-toast";
 import { useConfirm } from "../lib/use-confirm";
 
 const DEFAULT_PAGE_SIZE = 15;
+
+const STATUS_LABELS = {
+  active: "Active",
+  flagged: "Flagged",
+  processing: "Processing",
+  draft: "Draft",
+  archived: "Archived",
+};
 
 const SKIP_REASON_LABELS = {
   blank_sku: "blank SKU",
@@ -52,6 +59,7 @@ export default function Products() {
   const [jobLoading, setJobLoading] = useState(true);
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [statuses, setStatuses] = useState(["active", "flagged"]);
   const [loading, setLoading] = useState(true);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -65,8 +73,6 @@ export default function Products() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productIssues, setProductIssues] = useState([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [generateTarget, setGenerateTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [issues, setIssues] = useState([]);
@@ -83,7 +89,8 @@ export default function Products() {
 
   useEffect(() => {
     loadCategories();
-  }, []);
+    loadStatuses();
+  }, [ingestionJobId]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -128,6 +135,7 @@ export default function Products() {
       loadJob({ silent: true }),
       loadProducts({ silent: true }),
       loadFileIssues({ silent: true }),
+      loadStatuses(),
     ]);
   }
 
@@ -201,10 +209,21 @@ export default function Products() {
 
   async function loadCategories() {
     try {
-      const cats = await fetchCategories();
+      const cats = await fetchCategories(ingestionJobId);
       setCategories(cats);
     } catch (err) {
       showToast(err.message || "Failed to load categories", "error");
+    }
+  }
+
+  async function loadStatuses() {
+    try {
+      const sts = await fetchStatuses(ingestionJobId);
+      if (Array.isArray(sts) && sts.length > 0) {
+        setStatuses(sts);
+      }
+    } catch {
+      // Keep sensible default active/flagged
     }
   }
 
@@ -287,50 +306,6 @@ export default function Products() {
     }
   }
 
-  function handleGenerateContent(productId) {
-    const product = products.find((item) => item.id === productId) || selectedProduct;
-    const productTitle = product?.title || `Product #${productId}`;
-    setGenerateTarget({ id: productId, title: productTitle });
-  }
-
-  function handleCancelGenerateContent() {
-    if (generating) return;
-    setGenerateTarget(null);
-  }
-
-  async function handleConfirmGenerateContent({ tone, includeSeo }) {
-    if (!generateTarget) return;
-
-    const productId = generateTarget.id;
-
-    try {
-      setGenerating(true);
-      const result = await generateSingleContent(productId, tone, includeSeo);
-      if (result.warnings?.length) {
-        showToast(`Content generated with ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`, "warning");
-      } else {
-        showToast("Content generated successfully", "success");
-      }
-      setGenerateTarget(null);
-      await loadProducts({ silent: true });
-      if (selectedProduct?.id === productId) {
-        const nextIssues = await fetchProductIssues(productId);
-        setProductIssues(nextIssues);
-        setSelectedProduct({
-          ...selectedProduct,
-          generated_description: result.generated_description,
-          seo_title: result.seo_title,
-          seo_keywords: result.seo_keywords,
-          issue_count: nextIssues.filter((issue) => !issue.resolved).length,
-        });
-      }
-    } catch (err) {
-      showToast(`Content generation failed: ${err.message}`, "error");
-    } finally {
-      setGenerating(false);
-    }
-  }
-
   async function handleViewDetails(product) {
     setSelectedProduct(product);
     setProductIssues([]);
@@ -348,7 +323,7 @@ export default function Products() {
   }
 
   function handleCloseDetails() {
-    if (generating || saving) return;
+    if (saving) return;
     setSelectedProduct(null);
     setProductIssues([]);
     setIssuesLoading(false);
@@ -586,10 +561,10 @@ export default function Products() {
             ariaLabel="Filter by status"
             options={[
               { value: "", label: "All Statuses" },
-              { value: "active", label: "Active" },
-              { value: "draft", label: "Draft" },
-              { value: "flagged", label: "Flagged" },
-              { value: "archived", label: "Archived" },
+              ...statuses.map((st) => ({
+                value: st,
+                label: STATUS_LABELS[st] || st.charAt(0).toUpperCase() + st.slice(1),
+              })),
             ]}
           />
           <Select
@@ -609,7 +584,6 @@ export default function Products() {
         products={products}
         loading={loading}
         onDelete={handleDeleteRequest}
-        onGenerateContent={handleGenerateContent}
         onViewDetails={handleViewDetails}
         sortBy={sortBy}
         sortOrder={sortOrder}
@@ -643,20 +617,10 @@ export default function Products() {
         product={selectedProduct}
         issues={productIssues}
         issuesLoading={issuesLoading}
-        generating={generating}
         saving={saving}
         onClose={handleCloseDetails}
-        onGenerateContent={handleGenerateContent}
         onSave={handleSaveProduct}
         onReviewIssue={handleReviewIssue}
-      />
-
-      <GenerateContentDialog
-        open={Boolean(generateTarget)}
-        productTitle={generateTarget?.title ?? ""}
-        loading={generating}
-        onCancel={handleCancelGenerateContent}
-        onConfirm={handleConfirmGenerateContent}
       />
     </>
   );
