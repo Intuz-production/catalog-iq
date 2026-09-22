@@ -1,26 +1,22 @@
 /**
  * CatalogIQ — Dashboard Page
  *
- * Overview with key metrics, recent issues, and recent alerts.
+ * Overview with key metrics and recent issues.
  */
 
 import { useState, useEffect } from "react";
 import {
-  Package, AlertTriangle, Sparkles, BarChart3,
-  FileText, Bell, TrendingDown,
+  Package, AlertTriangle, FileText, Clock, CheckCircle,
 } from "lucide-react";
-import { fetchDashboardStats, fetchAllIssues, fetchAlerts } from "../api/client";
+import { fetchDashboardStats, fetchAllIssues } from "../api/client";
 import DataIssueCard from "../components/DataIssueCard";
 import { useToast } from "../lib/use-toast";
-import { useCompetitorConfig } from "../lib/use-competitor-config";
 
 export default function Dashboard() {
   const { showToast } = useToast();
   const [stats, setStats] = useState(null);
   const [issues, setIssues] = useState([]);
-  const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const { config: marketplaceConfig } = useCompetitorConfig();
 
   useEffect(() => {
     loadDashboard();
@@ -29,24 +25,18 @@ export default function Dashboard() {
   async function loadDashboard() {
     try {
       setLoading(true);
-      const [statsData, issuesData, alertsData] = await Promise.all([
+      const [statsData, issuesData] = await Promise.all([
         fetchDashboardStats(),
         fetchAllIssues({ resolved: false, limit: 5 }),
-        fetchAlerts({ acknowledged: false, limit: 5 }),
       ]);
       setStats(statsData);
       setIssues(issuesData.items);
-      setAlerts(alertsData);
     } catch (err) {
       showToast(err.message || "Failed to load dashboard", "error");
     } finally {
       setLoading(false);
     }
   }
-
-  const marketplaceBySource = Object.fromEntries(
-    (marketplaceConfig?.sources ?? []).map((source) => [source.id, source]),
-  );
 
   if (loading) {
     return (
@@ -72,7 +62,7 @@ export default function Dashboard() {
           <div className="stat-value">{stats?.total_products || 0}</div>
         </div>
         <div className="stat-card green">
-          <div className="stat-icon"><Package size={38} /></div>
+          <div className="stat-icon"><CheckCircle size={38} /></div>
           <div className="stat-label">Active Products</div>
           <div className="stat-value">{stats?.active_products || 0}</div>
         </div>
@@ -92,77 +82,31 @@ export default function Dashboard() {
           <div className="stat-value">{stats?.products_without_description || 0}</div>
         </div>
         <div className="stat-card cyan">
-          <div className="stat-icon"><Bell size={38} /></div>
-          <div className="stat-label">Active Alerts</div>
-          <div className="stat-value">{stats?.recent_alerts || 0}</div>
+          <div className="stat-icon"><Clock size={38} /></div>
+          <div className="stat-label">Last Ingestion</div>
+          <div className="stat-value" style={{ fontSize: "0.9rem", lineHeight: 1.3 }}>
+            {stats?.last_ingestion
+              ? new Date(stats.last_ingestion).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+              : "—"}
+          </div>
         </div>
       </div>
 
-      {/* Two-column layout for issues and alerts */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {/* Recent Issues */}
-        <div className="card">
-          <div className="card-header">
-            <h3>Recent Data Issues</h3>
-            <span className="badge badge-high">{issues.length} open</span>
-          </div>
-          {issues.length > 0 ? (
-            issues.map((issue) => (
-              <DataIssueCard key={issue.id} issue={issue} />
-            ))
-          ) : (
-            <div className="empty-state" style={{ padding: 32 }}>
-              <p>No open data issues. Your catalog looks clean.</p>
-            </div>
-          )}
+      {/* Recent Issues */}
+      <div className="card">
+        <div className="card-header">
+          <h3>Recent Data Issues</h3>
+          <span className="badge badge-high">{issues.length} open</span>
         </div>
-
-        {/* Recent Alerts */}
-        <div className="card">
-          <div className="card-header">
-            <h3>Competitor Alerts</h3>
-            <span className="badge badge-medium">{alerts.length} new</span>
+        {issues.length > 0 ? (
+          issues.map((issue) => (
+            <DataIssueCard key={issue.id} issue={issue} />
+          ))
+        ) : (
+          <div className="empty-state" style={{ padding: 32 }}>
+            <p>No open data issues. Your catalog looks clean.</p>
           </div>
-          {alerts.length > 0 ? (
-            alerts.map((alert) => (
-              <div key={alert.id} className="alert-item">
-                <div className={`alert-icon ${alert.alert_type}`}>
-                  {alert.alert_type === "undercut" ? (
-                    <TrendingDown size={18} />
-                  ) : alert.alert_type === "out_of_stock" ? (
-                    <Package size={18} />
-                  ) : (
-                    <BarChart3 size={18} />
-                  )}
-                </div>
-                <div className="alert-content">
-                  <p>{alert.message}</p>
-                  <div className="alert-meta">
-                    <div className="marketplace-badges">
-                      <span className={`badge badge-${alert.source}`}>
-                        {marketplaceBySource[alert.source]?.platform || alert.source}
-                      </span>
-                      {marketplaceBySource[alert.source]?.region ? (
-                        <span className="badge badge-region">
-                          {marketplaceBySource[alert.source].region}
-                        </span>
-                      ) : null}
-                    </div>
-                    {" "}
-                    {new Date(alert.created_at).toLocaleString(undefined, {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                  </div>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state" style={{ padding: 32 }}>
-              <p>No active alerts. Run a competitor scrape to get started.</p>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );

@@ -27,8 +27,22 @@ export async function fetchProduct(id) {
   return request(`/api/products/${id}`);
 }
 
-export async function fetchCategories() {
-  return request("/api/products/categories");
+export async function fetchCategories(ingestionJobId) {
+  const query = new URLSearchParams();
+  if (ingestionJobId !== undefined && ingestionJobId !== null) {
+    query.set("ingestion_job_id", ingestionJobId);
+  }
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return request(`/api/products/categories${qs}`);
+}
+
+export async function fetchStatuses(ingestionJobId) {
+  const query = new URLSearchParams();
+  if (ingestionJobId !== undefined && ingestionJobId !== null) {
+    query.set("ingestion_job_id", ingestionJobId);
+  }
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return request(`/api/products/statuses${qs}`);
 }
 
 export async function fetchDashboardStats() {
@@ -168,6 +182,13 @@ export async function generateSingleContent(productId, tone = "professional", in
     `/api/content/generate/${productId}?tone=${tone}&include_seo=${includeSeo}`,
     { method: "POST" }
   );
+}
+
+export async function aiThought(productId, prompt) {
+  return request(`/api/products/${productId}/ai-thought`, {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
 }
 
 // ---- Competitors ----

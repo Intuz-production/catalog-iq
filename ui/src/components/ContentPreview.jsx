@@ -25,7 +25,7 @@ export default function ContentPreview({ product, warnings = [], wordCount = nul
   if (!description) {
     return (
       <div className="content-preview content-preview-empty">
-        No content generated yet. Click Generate to create an SEO description.
+        No description available yet. SEO content is generated automatically during file analysis.
       </div>
     );
   }

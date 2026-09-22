@@ -18,7 +18,7 @@ import { useConfirm } from "../lib/use-confirm";
 const navItems = [
   { path: "/", icon: LayoutDashboard, label: "Dashboard" },
   { path: "/products", icon: Package, label: "Products" },
-  { path: "/competitors", icon: BarChart3, label: "Competitors" },
+  // { path: "/competitors", icon: BarChart3, label: "Competitors" },
 ];
 
 export default function Layout() {

@@ -170,6 +170,11 @@ class Product(Base):
     attributes = Column(JSON, default=dict)
     raw_data = Column(JSON, default=dict)
 
+    # Inventory & media
+    stock = Column(Integer, nullable=True)
+    in_stock = Column(Boolean, default=True, nullable=False)
+    image_url = Column(Text, nullable=True)
+
     # SEO metadata
     seo_title = Column(String(200), nullable=True)
     seo_keywords = Column(Text, nullable=True)
@@ -345,6 +350,9 @@ class ProductBase(BaseModel):
     brand: Optional[str] = Field(None, description="Product brand name")
     price: Optional[float] = Field(None, description="Product price")
     currency: str = Field(default="USD", description="Price currency code")
+    stock: Optional[int] = Field(None, description="Product stock quantity")
+    in_stock: Optional[bool] = Field(True, description="Whether product is in stock")
+    image_url: Optional[str] = Field(None, description="Product image URL")
 
 
 class ProductCreate(ProductBase):
@@ -364,6 +372,9 @@ class ProductUpdate(BaseModel):
     attributes: Optional[dict] = None
     seo_title: Optional[str] = None
     seo_keywords: Optional[str] = None
+    stock: Optional[int] = None
+    in_stock: Optional[bool] = None
+    image_url: Optional[str] = None
 
 
 class ProductResponse(ProductBase):
@@ -376,6 +387,9 @@ class ProductResponse(ProductBase):
     attributes: dict = {}
     seo_title: Optional[str] = None
     seo_keywords: Optional[str] = None
+    stock: Optional[int] = None
+    in_stock: bool = True
+    image_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     issue_count: Optional[int] = 0
@@ -663,6 +677,25 @@ class TokenResponse(BaseModel):
     """Schema for JWT login responses."""
     access_token: str
     token_type: str = "bearer"
+
+
+class AiThoughtRequest(BaseModel):
+    """Schema for a free-text merchant prompt sent to the AI thought endpoint."""
+    prompt: str = Field(..., min_length=3, max_length=2000, description="Free-text instruction from the merchant")
+
+
+class AiThoughtChange(BaseModel):
+    """A single field change proposed by the AI thought endpoint."""
+    field: str = Field(..., description="Field name (e.g. 'description', 'attribute:color')")
+    before: str = Field(default="", description="Current field value")
+    after: str = Field(..., description="Proposed new value")
+    reason: str = Field(default="", description="Short explanation of the change")
+
+
+class AiThoughtResponse(BaseModel):
+    """Response from the AI thought endpoint."""
+    changes: list[AiThoughtChange] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
 class DashboardStats(BaseModel):

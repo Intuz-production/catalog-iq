@@ -28,7 +28,7 @@ from app.models.schemas import (
     SuggestionSource,
     AiAnalysisStatus,
 )
-from app.services.content_service import _extract_json_object
+from app.services.content_service import _extract_json_object, generate_content_for_product
 from app.services.llm import chat_completion
 from app.services.ingestion_service import (
     ATTRIBUTE_FIELD_PREFIX,
@@ -45,7 +45,7 @@ EXAMPLE_HINT_RE = re.compile(r"\be\.g\.?\b", re.IGNORECASE)
 MAX_RECORDED_AI_FAILURES = 10
 FACT_ATTRIBUTE_FIELDS = frozenset({
     "size", "sizes", "material", "materials", "fabric",
-    "color", "colour", "price", "weight",
+    "color", "colour", "price", "weight", "stock",
 })
 
 # Soft quality issue types owned by AI (cleared and rewritten on re-analysis).
@@ -92,6 +92,8 @@ def _source_blob(product: Product) -> str:
         product.category or "",
         product.brand or "",
         "" if product.price is None else str(product.price),
+        "" if getattr(product, "stock", None) is None else str(product.stock),
+        getattr(product, "image_url", None) or "",
         json.dumps(product.attributes or {}, ensure_ascii=True),
         json.dumps(product.raw_data or {}, ensure_ascii=True),
     ]
@@ -141,6 +143,9 @@ def build_ingest_prompt(product: Product, open_issues: list[DataIssue]) -> str:
         "brand": product.brand,
         "price": product.price,
         "currency": product.currency,
+        "stock": getattr(product, "stock", None),
+        "in_stock": getattr(product, "in_stock", True),
+        "image_url": getattr(product, "image_url", None),
         "attributes": product.attributes or {},
         "raw_data": product.raw_data or {},
     }
@@ -152,12 +157,16 @@ STRICT RULES:
 1. Use ONLY facts in the JSON. Do not invent specs, materials, sizes, prices,
    warranties, capacities, or other claims that are not present.
 2. In "rewrite", return ready-to-use title, description, category, brand, price,
-   and every attribute — polished, consistent, and complete from known facts.
+   stock, in_stock, image_url, and every attribute — polished, consistent, and complete from known facts.
    Improved rewrite fields become Accept suggestions for the merchant even when
    there is no separate soft-quality problem.
 3. If a field is already publish-ready, return it unchanged.
 4. Never change or return a different SKU.
 5. Price may only be normalized (strip currency symbols) or left as-is. Do not invent a new price.
+   Category: If missing or generic, suggest an appropriate e-commerce category based on title and attributes.
+   Stock: Extract integer quantity if stated in raw_data, attributes, or product info. Do NOT invent stock numbers.
+   In stock: boolean (true/false). False if stock is 0 or out of stock, otherwise true.
+   Image URL: Extract if present in raw_data or attributes. Never invent fake image URLs.
 6. Soft quality: Review EVERY field (title, description, category, brand, price,
    and each attribute) against the FULL product JSON — not in isolation.
    Use cross-field context (attributes informing description, title vs color, etc.).
@@ -194,6 +203,9 @@ Return JSON with this shape:
     "category": "...",
     "brand": "...",
     "price": "...",
+    "stock": 10,
+    "in_stock": true,
+    "image_url": "https://...",
     "attributes": {{ "color": "...", "size": "..." }}
   }},
   "field_reasons": {{ "title": "why it changed" }},
@@ -247,6 +259,41 @@ def sanitize_rewrite(product: Product, rewrite: dict[str, Any]) -> dict[str, Opt
         suggested_text = _stringify(suggested)
         if field_name == "title" and not suggested_text:
             suggested_text = original or product.sku
+
+        if field_name == "stock":
+            if suggested_text is not None and suggested_text != "":
+                try:
+                    int_val = int(float(suggested_text))
+                    suggested_text = str(int_val)
+                except (ValueError, TypeError):
+                    suggested_text = original
+            if _introduces_new_numbers(suggested_text, source):
+                sanitized[field_name] = original
+            else:
+                sanitized[field_name] = suggested_text
+            continue
+
+        if field_name == "in_stock":
+            if suggested is not None:
+                val_str = str(suggested).strip().lower()
+                if val_str in ("false", "0", "no", "outofstock", "out of stock"):
+                    sanitized[field_name] = "false"
+                else:
+                    sanitized[field_name] = "true"
+            else:
+                sanitized[field_name] = original or "true"
+            continue
+
+        if field_name == "image_url":
+            if suggested_text:
+                if (getattr(product, "image_url", None) and suggested_text == product.image_url) or suggested_text.lower() in source:
+                    sanitized[field_name] = suggested_text
+                else:
+                    sanitized[field_name] = original
+            else:
+                sanitized[field_name] = original
+            continue
+
         if _introduces_new_numbers(suggested_text, source):
             sanitized[field_name] = original
         else:
@@ -301,8 +348,8 @@ def _values_match(original: Optional[str], suggested: Optional[str]) -> bool:
             text = text.replace(mark, "-")
         return re.sub(r"\s+", " ", text)
 
-    left = normalize(original)
-    right = normalize(suggested)
+    left = normalize(original).lower()
+    right = normalize(suggested).lower()
     if left == right:
         return True
     try:
@@ -688,6 +735,22 @@ def run_ingestion_ai_job(job_id: int, product_ids: list[int]) -> None:
                 ).all()
                 payload = request_product_rewrite(product, open_issues)
                 analyze_product_with_payload(db, product, job_id, payload)
+
+                try:
+                    generate_content_for_product(
+                        db=db,
+                        product_id=product.id,
+                        tone="professional",
+                        include_seo=True,
+                    )
+                except Exception as seo_exc:
+                    logger.warning(
+                        "SEO content generation failed for product %s in job %s: %s",
+                        product.id,
+                        job_id,
+                        seo_exc,
+                    )
+
                 product.ai_analysis_status = AiAnalysisStatus.DONE.value
                 analyzed += 1
             except Exception as exc:
@@ -755,3 +818,136 @@ def run_ingestion_ai_job(job_id: int, product_ids: list[int]) -> None:
             db.commit()
     finally:
         db.close()
+
+
+# =============================================================================
+# "Give a Thought" — Free-Text AI Product Update
+# =============================================================================
+
+THOUGHT_SYSTEM_PROMPT = (
+    "You are a catalog data editor. Given a full product row and a merchant's "
+    "instruction, return ONLY the fields that need changing as a JSON object. "
+    "Use only facts already in the product data — never invent specs, prices, "
+    "or attributes that are not present. Keep unchanged fields out of the response."
+)
+
+
+def build_thought_prompt(product: Product, user_prompt: str) -> str:
+    """Build an LLM prompt for a free-text merchant instruction on one product.
+
+    Only WooCommerce-exportable fields are included so the AI never proposes
+    changes to fields (e.g. seo_title) that are absent from the CSV export.
+    """
+    payload = {
+        "sku": product.sku,
+        "title": product.title,
+        "description": product.generated_description or product.description,
+        "category": product.category,
+        "brand": product.brand,
+        "price": product.price,
+        "currency": product.currency,
+        "stock": getattr(product, "stock", None),
+        "in_stock": getattr(product, "in_stock", True),
+        "image_url": getattr(product, "image_url", None),
+        "attributes": product.attributes or {},
+    }
+    return f"""You are editing a single product for an e-commerce merchant.
+
+MERCHANT INSTRUCTION:
+{user_prompt}
+
+STRICT RULES:
+1. Apply the merchant's instruction to the product data below.
+2. Return ONLY fields whose values actually change — do not return unchanged fields.
+3. Never invent specifications, measurements, materials, prices, or attributes not
+   present in the product JSON.
+4. For each changed field, explain WHY it changed (keep it short, 1-2 sentences).
+5. VALID FIELD NAMES (WooCommerce export fields only):
+   - title        → WooCommerce "Name"
+   - description  → WooCommerce "Description" and "Short description"
+   - category     → WooCommerce "Categories"
+   - brand        → WooCommerce "Brands"
+   - price        → WooCommerce "Regular price" (normalize only, do not invent)
+   - stock        → WooCommerce "Stock" (integer, do not invent)
+   - in_stock     → WooCommerce "In stock?" (true/false)
+   - image_url    → WooCommerce "Images" (only if present in product data)
+   - attribute:<key>  → WooCommerce "Attribute N" columns (e.g. attribute:color)
+   DO NOT propose changes to seo_title, seo_keywords, or any field not listed above.
+6. If the instruction cannot be applied safely without inventing facts, return
+   an empty "changes" array and explain in "error".
+
+Return JSON with this exact shape:
+{{
+  "changes": [
+    {{
+      "field": "description",
+      "before": "current value here",
+      "after": "improved value here",
+      "reason": "Why this changed"
+    }}
+  ],
+  "error": null
+}}
+
+Product JSON:
+{json.dumps(payload, default=str, ensure_ascii=True)}
+"""
+
+
+def run_thought_rewrite(product: Product, user_prompt: str) -> dict:
+    """Call the LLM with a merchant free-text instruction and return structured diffs.
+
+    Returns a dict with:
+      - changes: list of {{ field, before, after, reason }}
+      - error: optional string if the AI declined or failed
+    """
+    raw = chat_completion(
+        messages=[
+            {"role": "system", "content": THOUGHT_SYSTEM_PROMPT},
+            {"role": "user", "content": build_thought_prompt(product, user_prompt)},
+        ],
+        temperature=0.4,
+        max_tokens=1500,
+    )
+    try:
+        data = _extract_json_object(raw)
+    except Exception:
+        return {"changes": [], "error": "Could not parse AI response."}
+
+    changes = data.get("changes") or []
+    error = data.get("error") or None
+
+    # Sanitize — strip any change that invents new numbers
+    source = _source_blob(product)
+    safe_changes = []
+    for item in changes:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "").strip()
+        after = str(item.get("after") or "").strip()
+        before = str(item.get("before") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not field or not after:
+            continue
+        # Block invented numbers for fact-sensitive fields
+        canonical = field.replace("attribute:", "").lower()
+        if canonical in FACT_ATTRIBUTE_FIELDS and _introduces_new_numbers(after, source):
+            continue
+
+        # Hard allowlist: only WooCommerce-exported fields are returned.
+        # Attribute fields pass via the "attribute:" prefix convention.
+        WOO_ALLOWED = frozenset({
+            "title", "description", "category", "brand",
+            "price", "stock", "in_stock", "image_url",
+        })
+        if not field.startswith("attribute:") and field not in WOO_ALLOWED:
+            continue
+
+        safe_changes.append({
+            "field": field,
+            "before": before,
+            "after": after,
+            "reason": reason,
+        })
+
+    return {"changes": safe_changes, "error": error}

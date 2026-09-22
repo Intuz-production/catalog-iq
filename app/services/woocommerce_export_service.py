@@ -71,6 +71,11 @@ def _published_flag(status: Optional[ProductStatus]) -> str:
     return "0"
 
 
+def _in_stock_flag(in_stock: Optional[bool]) -> str:
+    """WooCommerce In stock? is 1 unless explicitly marked out of stock."""
+    return "0" if in_stock is False else "1"
+
+
 def _parse_weight_kg(raw: Any) -> str:
     """Convert stored weight strings such as 0.8kg or 598g into kilograms."""
     text = _stringify(raw)
@@ -152,14 +157,14 @@ def product_to_row(product: Product, max_attributes: int) -> dict[str, str]:
         "Short description": _short_description(description),
         "Description": description,
         "Tax status": "taxable",
-        "In stock?": "1",
+        "In stock?": _in_stock_flag(getattr(product, "in_stock", None)),
         "Weight (kg)": _weight_value(product),
         "Allow customer reviews?": "1",
         "Regular price": _stringify(product.price),
         "Categories": _stringify(product.category),
         "Brands": _stringify(product.brand),
-        "Images": "",
-        "Stock": "",
+        "Images": _stringify(getattr(product, "image_url", None)),
+        "Stock": _stringify(getattr(product, "stock", None)),
         "Parent": "",
     }
 

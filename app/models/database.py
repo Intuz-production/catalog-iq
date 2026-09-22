@@ -236,6 +236,33 @@ def _migrate_product_ai_analysis_status_column() -> None:
     logger.info("Applied products schema update: ai_analysis_status")
 
 
+def _migrate_product_inventory_media_columns() -> None:
+    """Add stock, in_stock, and image_url columns for WooCommerce parity."""
+    inspector = inspect(engine)
+    if "products" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("products")}
+    statements: list[str] = []
+
+    if "stock" not in existing_columns:
+        statements.append("ALTER TABLE products ADD COLUMN stock INTEGER")
+    if "in_stock" not in existing_columns:
+        statements.append(
+            "ALTER TABLE products ADD COLUMN in_stock BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    if "image_url" not in existing_columns:
+        statements.append("ALTER TABLE products ADD COLUMN image_url TEXT")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+    logger.info("Applied products inventory/media schema updates: %s", ", ".join(statements))
+
+
 def init_db() -> None:
     """Create all database tables if they do not exist.
 
@@ -249,5 +276,6 @@ def init_db() -> None:
     _migrate_ingestion_job_ai_columns()
     _migrate_product_ingestion_job_column()
     _migrate_product_ai_analysis_status_column()
+    _migrate_product_inventory_media_columns()
     _migrate_issue_type_enum()
     logger.info("Database tables initialized successfully.")

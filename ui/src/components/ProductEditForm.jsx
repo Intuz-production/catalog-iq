@@ -9,9 +9,12 @@ import Select from "./Select";
 
 const STATUS_OPTIONS = [
   { value: "active", label: "Active" },
-  { value: "draft", label: "Draft" },
   { value: "flagged", label: "Flagged" },
-  { value: "archived", label: "Archived" },
+];
+
+const IN_STOCK_OPTIONS = [
+  { value: "true", label: "Yes — In Stock" },
+  { value: "false", label: "No — Out of Stock" },
 ];
 
 /**
@@ -26,6 +29,13 @@ const STATUS_OPTIONS = [
 export default function ProductEditForm({ product, saving = false, onSubmit, onCancel }) {
   const attrs = product.attributes || {};
   const [status, setStatus] = useState(product.status || "active");
+  const [inStock, setInStock] = useState(
+    product.in_stock === false ? "false" : "true"
+  );
+
+  const statusOptions = STATUS_OPTIONS.some((opt) => opt.value === product.status)
+    ? STATUS_OPTIONS
+    : (product.status ? [...STATUS_OPTIONS, { value: product.status, label: product.status.charAt(0).toUpperCase() + product.status.slice(1) }] : STATUS_OPTIONS);
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -60,6 +70,9 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
       return;
     }
 
+    const stockRaw = String(formData.get("stock") || "").trim();
+    const stock = stockRaw !== "" ? Math.max(0, Math.round(Number(stockRaw))) : null;
+
     onSubmit({
       title,
       description: String(formData.get("description") || "").trim() || null,
@@ -68,6 +81,11 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
       price,
       status,
       attributes: nextAttributes,
+      seo_title: String(formData.get("seo_title") || "").trim() || null,
+      seo_keywords: String(formData.get("seo_keywords") || "").trim() || null,
+      stock: Number.isNaN(stock) ? null : stock,
+      in_stock: inStock !== "false",
+      image_url: String(formData.get("image_url") || "").trim() || null,
     });
   }
 
@@ -86,12 +104,19 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
       </div>
 
       <div className="form-group">
-        <label htmlFor="product-edit-description">Description</label>
+        <label htmlFor="product-edit-description">
+          Description
+          {product.generated_description ? (
+            <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: "0.8rem", marginLeft: 6 }}>
+              (AI-generated)
+            </span>
+          ) : null}
+        </label>
         <textarea
           id="product-edit-description"
           name="description"
           rows={4}
-          defaultValue={product.description || ""}
+          defaultValue={product.generated_description || product.description || ""}
           placeholder="Enter a product description"
           disabled={saving}
         />
@@ -136,7 +161,7 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
             value={status}
             onChange={setStatus}
             ariaLabel="Product status"
-            options={STATUS_OPTIONS}
+            options={statusOptions}
             disabled={saving}
           />
         </div>
@@ -173,6 +198,75 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
             disabled={saving}
           />
         </div>
+      </div>
+
+      <div className="product-edit-divider" />
+      <h4 className="product-edit-section-title">SEO &amp; Content</h4>
+
+      <div className="form-group">
+        <label htmlFor="product-edit-seo-title">SEO Title</label>
+        <input
+          id="product-edit-seo-title"
+          name="seo_title"
+          type="text"
+          maxLength={200}
+          defaultValue={product.seo_title || ""}
+          placeholder="e.g. Best Running Shoes — Brand Name"
+          disabled={saving}
+        />
+      </div>
+
+      <div className="form-group">
+        <label htmlFor="product-edit-seo-keywords">SEO Keywords</label>
+        <input
+          id="product-edit-seo-keywords"
+          name="seo_keywords"
+          type="text"
+          defaultValue={product.seo_keywords || ""}
+          placeholder="comma-separated, e.g. running shoes, eco footwear"
+          disabled={saving}
+        />
+      </div>
+
+      <div className="product-edit-divider" />
+      <h4 className="product-edit-section-title">Inventory &amp; Media</h4>
+
+      <div className="product-edit-grid">
+        <div className="form-group">
+          <label htmlFor="product-edit-stock">Stock Quantity</label>
+          <input
+            id="product-edit-stock"
+            name="stock"
+            type="number"
+            min="0"
+            step="1"
+            defaultValue={product.stock ?? ""}
+            placeholder="e.g. 100"
+            disabled={saving}
+          />
+        </div>
+        <div className="form-group">
+          <span className="product-edit-field-label">In Stock?</span>
+          <Select
+            value={inStock}
+            onChange={setInStock}
+            ariaLabel="In stock status"
+            options={IN_STOCK_OPTIONS}
+            disabled={saving}
+          />
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label htmlFor="product-edit-image-url">Image URL</label>
+        <input
+          id="product-edit-image-url"
+          name="image_url"
+          type="url"
+          defaultValue={product.image_url || ""}
+          placeholder="https://example.com/product-image.jpg"
+          disabled={saving}
+        />
       </div>
 
       <p className="product-edit-hint">
