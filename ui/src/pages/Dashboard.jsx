@@ -11,12 +11,16 @@ import {
 } from "lucide-react";
 import { fetchDashboardStats, fetchAllIssues, fetchAlerts } from "../api/client";
 import DataIssueCard from "../components/DataIssueCard";
+import { useToast } from "../lib/use-toast";
+import { useCompetitorConfig } from "../lib/use-competitor-config";
 
 export default function Dashboard() {
+  const { showToast } = useToast();
   const [stats, setStats] = useState(null);
   const [issues, setIssues] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const { config: marketplaceConfig } = useCompetitorConfig();
 
   useEffect(() => {
     loadDashboard();
@@ -27,18 +31,22 @@ export default function Dashboard() {
       setLoading(true);
       const [statsData, issuesData, alertsData] = await Promise.all([
         fetchDashboardStats(),
-        fetchAllIssues(false, 5),
+        fetchAllIssues({ resolved: false, limit: 5 }),
         fetchAlerts({ acknowledged: false, limit: 5 }),
       ]);
       setStats(statsData);
-      setIssues(issuesData);
+      setIssues(issuesData.items);
       setAlerts(alertsData);
     } catch (err) {
-      console.error("Failed to load dashboard:", err);
+      showToast(err.message || "Failed to load dashboard", "error");
     } finally {
       setLoading(false);
     }
   }
+
+  const marketplaceBySource = Object.fromEntries(
+    (marketplaceConfig?.sources ?? []).map((source) => [source.id, source]),
+  );
 
   if (loading) {
     return (
@@ -130,10 +138,21 @@ export default function Dashboard() {
                 <div className="alert-content">
                   <p>{alert.message}</p>
                   <div className="alert-meta">
-                    <span className={`badge badge-${alert.source}`}>
-                      {alert.source}
-                    </span>
-                    {" "}{new Date(alert.created_at).toLocaleDateString()}
+                    <div className="marketplace-badges">
+                      <span className={`badge badge-${alert.source}`}>
+                        {marketplaceBySource[alert.source]?.platform || alert.source}
+                      </span>
+                      {marketplaceBySource[alert.source]?.region ? (
+                        <span className="badge badge-region">
+                          {marketplaceBySource[alert.source].region}
+                        </span>
+                      ) : null}
+                    </div>
+                    {" "}
+                    {new Date(alert.created_at).toLocaleString(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
                   </div>
                 </div>
               </div>

@@ -1,151 +1,178 @@
 /**
- * CatalogIQ — Ingestion Page
+ * CatalogIQ — Products Page
  *
- * Ingest raw CSV supplier data, view recent job history,
- * and review/resolve flagged data quality issues.
+ * List uploaded CSV files and open each file to review its products.
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import {
-  Upload,
   FileSpreadsheet,
-  AlertTriangle,
-  CheckCircle2,
-  XCircle,
   RefreshCw,
-  Info,
-  Clock,
-  Plus,
-  Edit2
+  Search,
+  ChevronRight,
+  Pencil,
+  Trash2,
+  Upload,
 } from "lucide-react";
-import {
-  uploadCSV,
-  fetchIngestionJobs,
-  fetchAllIssues,
-  resolveIssue
-} from "../api/client";
-import DataIssueCard from "../components/DataIssueCard";
+import { deleteIngestionJob, fetchIngestionJobs, renameIngestionJob } from "../api/client";
+import PaginationBar from "../components/PaginationBar";
+import Select from "../components/Select";
+import SortableColumnHeader from "../components/SortableColumnHeader";
+import UploadProductFeedDialog from "../components/UploadProductFeedDialog";
+import { useConfirm } from "../lib/use-confirm";
+import { useDebouncedValue } from "../lib/use-debounced-value";
+import { useToast } from "../lib/use-toast";
 
+const JOB_SORTABLE_COLUMNS = [
+  { key: "id", label: "Job ID" },
+  { key: "group_name", label: "Group Name" },
+  { key: "status", label: "Status" },
+  { key: "processed_rows", label: "Processed" },
+  { key: "new_products", label: "Created" },
+  { key: "updated_products", label: "Updated" },
+  { key: "issues_found", label: "Issues" },
+  { key: "started_at", label: "Date" },
+];
+
+function jobGroupLabel(job) {
+  return job?.group_name || job?.filename || `Group #${job?.id}`;
+}
+
+const SKIP_REASON_LABELS = {
+  blank_sku: "blank SKU",
+  row_error: "row error",
+  invalid_row: "invalid row",
+};
+
+function formatSkipSummary(job) {
+  const skipped = job?.skipped_rows || 0;
+  if (!skipped) return "";
+  const counts = job?.skip_summary?.counts || {};
+  const parts = Object.entries(counts).map(
+    ([reason, count]) => `${count} ${SKIP_REASON_LABELS[reason] || reason}`
+  );
+  return parts.length ? parts.join(", ") : `${skipped} skipped`;
+}
 export default function Ingestion() {
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+  const { confirm } = useConfirm();
   const [jobs, setJobs] = useState([]);
-  const [issues, setIssues] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  const [toast, setToast] = useState(null);
-  const fileInputRef = useRef(null);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  const [jobSearchInput, setJobSearchInput] = useState("");
+  const jobSearchQuery = useDebouncedValue(jobSearchInput.trim(), 300);
+  const [jobStatusFilter, setJobStatusFilter] = useState("");
+  const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(10);
+  const [jobTotal, setJobTotal] = useState(0);
+  const [jobSortBy, setJobSortBy] = useState("started_at");
+  const [jobSortOrder, setJobSortOrder] = useState("desc");
 
   useEffect(() => {
-    loadData();
-  }, []);
+    setJobPage(1);
+  }, [jobSearchQuery, jobStatusFilter, jobPageSize, jobSortBy, jobSortOrder]);
 
-  async function loadData() {
+  useEffect(() => {
+    loadJobs();
+  }, [jobPage, jobPageSize, jobSearchQuery, jobStatusFilter, jobSortBy, jobSortOrder]);
+
+  const hasAnalyzingJob = jobs.some((job) => job.status === "analyzing");
+
+  useEffect(() => {
+    if (!hasAnalyzingJob) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      loadJobs({ silent: true });
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasAnalyzingJob]);
+
+  // Polling refetches stay silent so the table is not replaced by a spinner.
+  async function loadJobs({ silent = false } = {}) {
     try {
-      setLoading(true);
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
+      if (!silent) setJobsLoading(true);
+      const data = await fetchIngestionJobs({
+        skip: (jobPage - 1) * jobPageSize,
+        limit: jobPageSize,
+        search: jobSearchQuery || undefined,
+        status: jobStatusFilter || undefined,
+        sort_by: jobSortBy,
+        sort_order: jobSortOrder,
+      });
+      setJobs(data.items);
+      setJobTotal(data.total);
+
+      const maxPage = Math.max(1, Math.ceil(data.total / jobPageSize));
+      if (jobPage > maxPage) {
+        setJobPage(maxPage);
+      }
     } catch (err) {
-      showToast("Failed to load ingestion data", "error");
+      if (silent) return;
+      setJobs([]);
+      setJobTotal(0);
+      showToast(err.message || "Failed to load ingestion jobs", "error");
     } finally {
-      setLoading(false);
+      if (!silent) setJobsLoading(false);
     }
   }
 
   async function handleRefresh() {
+    await loadJobs({ silent: true });
+    showToast("Data refreshed", "info");
+  }
+
+  async function handleUploaded(result) {
+    setJobPage(1);
+    await loadJobs({ silent: true });
+    if (result?.id && result.status !== "failed") {
+      navigate(`/products/${result.id}`);
+    }
+  }
+
+  async function handleDeleteRequest(job) {
+    const label = jobGroupLabel(job);
+    const confirmed = await confirm({
+      title: "Delete Group",
+      message:
+        `Are you sure you want to delete "${label}" (#${job.id})? ` +
+        "The products this group created will be deleted with it. " +
+        "This action cannot be undone.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+
     try {
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
-      showToast("Data refreshed", "info");
+      await deleteIngestionJob(job.id);
+      showToast("Group deleted", "success");
+      await loadJobs({ silent: true });
     } catch (err) {
-      showToast("Failed to refresh data", "error");
+      showToast(err.message || "Failed to delete group", "error");
     }
   }
 
-  function showToast(message, type = "info") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  }
-
-  // Handle drag events
-  function handleDrag(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  }
-
-  // Handle drop event
-  async function handleDrop(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      await processUploadedFile(e.dataTransfer.files[0]);
-    }
-  }
-
-  // Handle manual file selection
-  async function handleFileSelect(e) {
-    if (e.target.files && e.target.files[0]) {
-      await processUploadedFile(e.target.files[0]);
-    }
-  }
-
-  async function processUploadedFile(file) {
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      showToast("Unsupported file type. Please upload a CSV file.", "error");
+  async function handleRenameRequest(job) {
+    const current = jobGroupLabel(job);
+    const nextName = window.prompt("Group name", current);
+    if (nextName == null) return;
+    const trimmed = nextName.trim();
+    if (!trimmed) {
+      showToast("Group name cannot be empty", "error");
       return;
     }
+    if (trimmed === current) return;
 
     try {
-      setUploading(true);
-      showToast(`Uploading ${file.name}...`, "info");
-      const result = await uploadCSV(file);
-      
-      if (result.status === "completed") {
-        showToast(`Successfully processed: ${result.processed_rows} rows`, "success");
-      } else if (result.status === "failed") {
-        showToast(`Ingestion failed: ${result.error_message || "Unknown error"}`, "error");
-      } else {
-        showToast("CSV file uploaded for processing", "info");
-      }
-
-      // Refresh data
-      const [jobsData, issuesData] = await Promise.all([
-        fetchIngestionJobs(15),
-        fetchAllIssues(false, 50)
-      ]);
-      setJobs(jobsData);
-      setIssues(issuesData);
+      await renameIngestionJob(job.id, trimmed);
+      showToast("Group renamed", "success");
+      await loadJobs({ silent: true });
     } catch (err) {
-      showToast(err.message || "Failed to upload CSV file", "error");
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }
-
-  async function handleResolveIssue(issueId) {
-    try {
-      await resolveIssue(issueId);
-      showToast("Issue marked as resolved", "success");
-      
-      // Update local issue state
-      setIssues(prev => prev.filter(i => i.id !== issueId));
-    } catch (err) {
-      showToast("Failed to resolve issue", "error");
+      showToast(err.message || "Failed to rename group", "error");
     }
   }
 
@@ -153,8 +180,12 @@ export default function Ingestion() {
     switch (status) {
       case "completed":
         return <span className="badge badge-active">Completed</span>;
+      case "completed_with_ai_errors":
+        return <span className="badge badge-medium">Completed with AI Errors</span>;
       case "failed":
         return <span className="badge badge-high">Failed</span>;
+      case "analyzing":
+        return <span className="badge badge-medium">AI Analyzing</span>;
       case "processing":
         return <span className="badge badge-medium">Processing</span>;
       default:
@@ -162,150 +193,164 @@ export default function Ingestion() {
     }
   }
 
-  if (loading && jobs.length === 0 && issues.length === 0) {
+  function handleJobSort(nextSortBy, nextSortOrder) {
+    setJobSortBy(nextSortBy);
+    setJobSortOrder(nextSortOrder);
+    setJobPage(1);
+  }
+
+  const initialLoading = jobsLoading && jobs.length === 0;
+
+  if (initialLoading) {
     return (
       <div className="loading">
         <div className="spinner" />
-        Loading ingestion platform...
+        Loading products...
       </div>
     );
   }
 
   return (
-    <div className="animate-in">
-      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <h2>Data Ingestion</h2>
-          <p>Import raw product data from supplier CSVs and normalize attributes</p>
+    <>
+      <div className="animate-in">
+        <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h2>Products</h2>
+            <p>Upload a CSV, then open that file to review its products</p>
+          </div>
+          <div className="page-header-actions">
+            <button className="btn btn-ghost" onClick={handleRefresh} type="button">
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+            <button className="btn btn-primary" onClick={() => setUploadOpen(true)} type="button">
+              <Upload size={16} />
+              Upload CSV
+            </button>
+          </div>
         </div>
-        <button className="btn btn-ghost" onClick={handleRefresh} disabled={uploading}>
-          <RefreshCw size={16} />
-          Refresh
-        </button>
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 24 }}>
-        {/* Left Column: Upload & History */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          {/* CSV File Drag & Drop Zone */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Upload Product Feed</h3>
-            </div>
-            
-            <div
-              className={`upload-zone ${dragActive ? "dragover" : ""}`}
-              onDragEnter={handleDrag}
-              onDragOver={handleDrag}
-              onDragLeave={handleDrag}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              style={{ position: "relative" }}
-            >
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileSelect}
-                accept=".csv"
-                style={{ display: "none" }}
-                disabled={uploading}
-              />
-              {uploading ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                  <div className="spinner" style={{ width: 42, height: 42 }} />
-                  <p style={{ fontWeight: 600 }}>Processing Ingestion Pipeline...</p>
-                  <p className="upload-hint">Running product data normalization & cleaning</p>
-                </div>
-              ) : (
-                <>
-                  <Upload size={48} style={{ color: "var(--accent-blue-light)" }} />
-                  <p style={{ fontWeight: 500, fontSize: "1.05rem", marginTop: 8 }}>
-                    Drag & drop your supplier CSV here, or <span style={{ color: "var(--accent-blue-light)" }}>browse</span>
-                  </p>
-                  <p className="upload-hint">Supported file format: CSV (.csv) up to 10MB</p>
-                </>
-              )}
-            </div>
-
-            {/* CSV Format Guidance */}
-            <div
-              style={{
-                marginTop: 20,
-                padding: 16,
-                background: "var(--bg-secondary)",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid var(--border-color)",
-                fontSize: "0.82rem"
-              }}
-            >
-              <h4 style={{ color: "var(--text-secondary)", fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                <Info size={14} /> Expected CSV Structure
-              </h4>
-              <p style={{ color: "var(--text-muted)", marginBottom: 10 }}>
-                The CSV parser accepts columns mapping to standard attributes. Recommended fields include:
-              </p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {["sku *", "title *", "description", "price", "category", "brand", "specifications / specs"].map((field) => (
-                  <span
-                    key={field}
-                    style={{
-                      padding: "3px 8px",
-                      background: "var(--bg-input)",
-                      borderRadius: "var(--radius-sm)",
-                      fontFamily: "monospace",
-                      color: field.includes("*") ? "var(--accent-orange)" : "var(--text-secondary)"
-                    }}
-                  >
-                    {field}
-                  </span>
-                ))}
-              </div>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", marginTop: 10 }}>
-                * Asterisk indicates required fields. Other fields will be automatically cleaned and stored in the product's structured JSON attributes.
-              </p>
-            </div>
+        <div className="card">
+          <div className="card-header">
+            <h3>Product Groups</h3>
           </div>
 
-          {/* Recent Ingestion Jobs */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Ingestion History</h3>
+          <div className="toolbar" style={{ marginBottom: 12 }}>
+            <div className="search-input">
+              <div style={{ position: "relative" }}>
+                <Search
+                  size={16}
+                  style={{
+                    position: "absolute",
+                    left: 12,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "var(--text-muted)",
+                  }}
+                />
+                <input
+                  type="search"
+                  placeholder="Search by group name..."
+                  value={jobSearchInput}
+                  onChange={(e) => setJobSearchInput(e.target.value)}
+                  style={{ paddingLeft: 36 }}
+                />
+              </div>
             </div>
-            
-            {jobs.length > 0 ? (
+            <Select
+              value={jobStatusFilter}
+              onChange={(value) => {
+                setJobStatusFilter(value);
+                setJobPage(1);
+              }}
+              placeholder="All Statuses"
+              ariaLabel="Filter jobs by status"
+              options={[
+                { value: "", label: "All Statuses" },
+                { value: "completed", label: "Completed" },
+                { value: "completed_with_ai_errors", label: "Completed with AI Errors" },
+                { value: "analyzing", label: "AI Analyzing" },
+                { value: "failed", label: "Failed" },
+                { value: "processing", label: "Processing" },
+                { value: "pending", label: "Pending" },
+              ]}
+            />
+          </div>
+
+          {jobsLoading ? (
+            <div className="loading"><div className="spinner" />Loading files...</div>
+          ) : jobs.length > 0 ? (
+            <>
               <div className="table-container">
                 <table>
                   <thead>
                     <tr>
-                      <th>Job ID</th>
-                      <th>File Name</th>
-                      <th>Status</th>
-                      <th>Processed</th>
-                      <th>Created</th>
-                      <th>Updated</th>
-                      <th>Issues</th>
-                      <th>Date</th>
+                      {JOB_SORTABLE_COLUMNS.map((column) => (
+                        <SortableColumnHeader
+                          key={column.key}
+                          columnKey={column.key}
+                          label={column.label}
+                          sortBy={jobSortBy}
+                          sortOrder={jobSortOrder}
+                          onSort={handleJobSort}
+                        />
+                      ))}
+                      <th>Skipped</th>
+                      <th>Products</th>
                     </tr>
                   </thead>
                   <tbody>
                     {jobs.map((job) => (
-                      <tr key={job.id}>
+                      <tr
+                        key={job.id}
+                        className="table-row-clickable"
+                        onClick={() => navigate(`/products/${job.id}`)}
+                      >
                         <td style={{ fontFamily: "monospace", fontWeight: 600, color: "var(--text-secondary)" }}>
                           #{job.id}
                         </td>
                         <td
                           style={{
-                            maxWidth: 160,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            fontWeight: 500
+                            maxWidth: 220,
+                            fontWeight: 500,
                           }}
-                          title={job.filename}
+                          title={job.filename ? `Last file: ${job.filename}` : undefined}
                         >
-                          {job.filename}
+                          <div className="ingestion-group-cell">
+                            <span className="ingestion-group-name">
+                              {jobGroupLabel(job)}
+                            </span>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleRenameRequest(job);
+                              }}
+                              title="Rename group"
+                              type="button"
+                              aria-label={`Rename ${jobGroupLabel(job)}`}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          </div>
+                          {job.filename && job.filename !== jobGroupLabel(job) ? (
+                            <div className="ingestion-group-filename">{job.filename}</div>
+                          ) : null}
                         </td>
-                        <td>{getStatusBadge(job.status)}</td>
+                        <td>
+                          {getStatusBadge(job.status)}
+                          {job.status === "analyzing" && (
+                            <div className="job-ai-progress ai-analyzing-status">
+                              <span
+                                className="spinner"
+                                aria-hidden="true"
+                                style={{ width: 12, height: 12, borderWidth: 2, margin: 0 }}
+                              />
+                              {job.ai_analyzed_rows || 0} analyzed
+                              {job.ai_error_count > 0 ? `, ${job.ai_error_count} errors` : ""}
+                            </div>
+                          )}
+                        </td>
                         <td>{job.processed_rows} / {job.total_rows}</td>
                         <td style={{ color: "var(--accent-green-light)" }}>
                           {job.new_products > 0 ? `+${job.new_products}` : 0}
@@ -319,74 +364,83 @@ export default function Ingestion() {
                         <td style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                           {new Date(job.started_at).toLocaleDateString()}
                         </td>
+                        <td
+                          style={{
+                            color: (job.skipped_rows || 0) > 0 ? "var(--accent-orange)" : "inherit",
+                          }}
+                          title={formatSkipSummary(job) || undefined}
+                        >
+                          {job.skipped_rows || 0}
+                          {(job.skipped_rows || 0) > 0 && formatSkipSummary(job) ? (
+                            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                              {formatSkipSummary(job)}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                navigate(`/products/${job.id}`);
+                              }}
+                              type="button"
+                            >
+                              Open
+                              <ChevronRight size={14} />
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleDeleteRequest(job);
+                              }}
+                              title="Delete uploaded file"
+                              style={{ color: "var(--accent-red)" }}
+                              type="button"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            ) : (
-              <div className="empty-state">
-                <FileSpreadsheet size={40} />
-                <h3>No Ingestion Jobs Yet</h3>
-                <p>Upload a product catalog CSV to start the ingestion pipeline.</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right Column: Flags & Contradictions */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          <div className="card" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-            <div className="card-header" style={{ marginBottom: 12 }}>
-              <h3>Open Quality Issues</h3>
-              <span className={`badge ${issues.length > 0 ? "badge-high" : "badge-active"}`}>
-                {issues.length} Flagged
-              </span>
+              <PaginationBar
+                page={jobPage}
+                pageSize={jobPageSize}
+                total={jobTotal}
+                onPageChange={setJobPage}
+                onPageSizeChange={(size) => {
+                  setJobPageSize(size);
+                  setJobPage(1);
+                }}
+                itemLabel="files"
+                pageSizeOptions={[5, 10, 15, 25]}
+              />
+            </>
+          ) : (
+            <div className="empty-state">
+              <FileSpreadsheet size={40} />
+              <h3>No Files Uploaded Yet</h3>
+              <p>Upload a product catalog CSV to create a file and review its products.</p>
+              <button className="btn btn-primary" onClick={() => setUploadOpen(true)} type="button">
+                <Upload size={16} />
+                Upload CSV
+              </button>
             </div>
-            
-            <p style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: 16 }}>
-              Review contradiction flags and missing catalog details flagged during CSV normalization.
-            </p>
-
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                maxHeight: 700,
-                paddingRight: 4,
-                display: "flex",
-                flexDirection: "column",
-                gap: 12
-              }}
-            >
-              {issues.length > 0 ? (
-                issues.map((issue) => (
-                  <DataIssueCard
-                    key={issue.id}
-                    issue={issue}
-                    onResolve={handleResolveIssue}
-                  />
-                ))
-              ) : (
-                <div className="empty-state" style={{ margin: "auto 0" }}>
-                  <CheckCircle2 size={42} style={{ color: "var(--accent-green)" }} />
-                  <h3>Clean Catalog!</h3>
-                  <p>No active data issues or attribute contradictions found.</p>
-                </div>
-              )}
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Toast Feedback */}
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast ${toast.type}`}>
-            {toast.message}
-          </div>
-        </div>
-      )}
-    </div>
+      <UploadProductFeedDialog
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={handleUploaded}
+      />
+    </>
   );
 }

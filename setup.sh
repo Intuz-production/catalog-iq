@@ -22,13 +22,19 @@ if [ ! -f .env ]; then
     cp .env.example .env
     echo ""
     echo "[INFO] Created .env file from template."
-    echo "       Please edit .env and add your GROQ_API_KEY and DATABASE_URL."
+    echo "       Please edit .env and set LLM_PROVIDER, LLM_MODEL, and the"
+    echo "       matching API key (GROQ_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)"
+    echo "       plus DATABASE_URL."
     echo ""
 fi
 
 # Setup React frontend
 echo "[3/5] Setting up React frontend..."
 cd ui
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo "[INFO] Created ui/.env file from template."
+fi
 npm install --silent
 cd ..
 
@@ -46,17 +52,26 @@ echo ""
 echo " Next steps:"
 echo ""
 echo "   1. Edit .env with your configuration:"
-echo "      - GROQ_API_KEY  (from https://console.groq.com/keys)"
+echo "      - LLM_PROVIDER (groq | openai | gemini)"
+echo "      - LLM_MODEL"
+echo "      - Matching API key (GROQ_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)"
 echo "      - DATABASE_URL  (PostgreSQL connection string)"
 echo ""
-echo "   2. Create the database:"
+echo "   2. Edit ui/.env with your frontend configuration:"
+echo "      - VITE_API_URL  (FastAPI backend URL)"
+echo ""
+echo "   3. Create the database:"
 echo "      createdb catalogiq"
 echo ""
-echo "   3. Start the backend:"
+echo "   4. Start the backend:"
 echo "      source venv/bin/activate"
 echo "      python -m app.main"
 echo ""
-echo "   4. Start the frontend (new terminal):"
+echo "      Default admin login (seeded on first startup):"
+echo "      - Email:    admin@catalogiq.local"
+echo "      - Password: admin123"
+echo ""
+echo "   5. Start the frontend (new terminal):"
 echo "      cd ui && npm run dev"
 echo ""
 echo "============================================"

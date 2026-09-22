@@ -1,50 +1,201 @@
 /**
- * CatalogIQ — Products Page
+ * CatalogIQ — File Product List
  *
- * Product catalog management with search, filtering, and detail views.
+ * Products and quality issues for one uploaded CSV file.
  */
 
 import { useState, useEffect } from "react";
-import { Search, Filter, X } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Search, Download, AlertTriangle, Pencil } from "lucide-react";
 import {
-  fetchProducts, fetchCategories, deleteProduct,
-  generateSingleContent, fetchProductIssues,
+  fetchProducts, fetchProduct, fetchCategories, deleteProduct,
+  generateSingleContent, fetchProductIssues, updateProduct,
+  exportWooCommerceCsv, fetchIngestionJob, renameIngestionJob,
+  fetchAllIssues, reviewIssue, acceptProductIssues,
 } from "../api/client";
 import ProductTable from "../components/ProductTable";
-import ContentPreview from "../components/ContentPreview";
-import DataIssueCard from "../components/DataIssueCard";
+import ProductDetailDialog from "../components/ProductDetailDialog";
+import GenerateContentDialog from "../components/GenerateContentDialog";
+import QualityIssuesDialog from "../components/QualityIssuesDialog";
+import Select from "../components/Select";
+import { useToast } from "../lib/use-toast";
+import { useConfirm } from "../lib/use-confirm";
+
+const DEFAULT_PAGE_SIZE = 15;
+
+const SKIP_REASON_LABELS = {
+  blank_sku: "blank SKU",
+  row_error: "row error",
+  invalid_row: "invalid row",
+};
+
+function formatSkipBreakdown(job) {
+  const skipped = job?.skipped_rows || 0;
+  if (!skipped) return null;
+  const counts = job?.skip_summary?.counts || {};
+  const parts = Object.entries(counts).map(
+    ([reason, count]) => `${count} ${SKIP_REASON_LABELS[reason] || reason}`
+  );
+  if (parts.length) {
+    return `${skipped} row${skipped === 1 ? "" : "s"} skipped (${parts.join(", ")})`;
+  }
+  return `${skipped} row${skipped === 1 ? "" : "s"} skipped`;
+}
 
 export default function Products() {
+  const { jobId } = useParams();
+  const ingestionJobId = Number(jobId);
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+  const { confirm } = useConfirm();
+  const [job, setJob] = useState(null);
+  const [jobLoading, setJobLoading] = useState(true);
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [sortBy, setSortBy] = useState("updated_at");
+  const [sortOrder, setSortOrder] = useState("desc");
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productIssues, setProductIssues] = useState([]);
+  const [issuesLoading, setIssuesLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [generateTarget, setGenerateTarget] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [issues, setIssues] = useState([]);
+  const [fileIssuesLoading, setFileIssuesLoading] = useState(true);
+  const [issueTotal, setIssueTotal] = useState(0);
+  const [busyProductId, setBusyProductId] = useState(null);
+  const [issuesDialogOpen, setIssuesDialogOpen] = useState(false);
 
   useEffect(() => {
-    loadProducts();
-    loadCategories();
-  }, [statusFilter, categoryFilter]);
+    if (!Number.isInteger(ingestionJobId) || ingestionJobId < 1) {
+      navigate("/products", { replace: true });
+    }
+  }, [ingestionJobId, navigate]);
 
-  async function loadProducts() {
+  useEffect(() => {
+    loadCategories();
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery((prev) => {
+        const next = searchInput.trim();
+        if (prev !== next) {
+          setPage(1);
+        }
+        return next;
+      });
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    if (!Number.isInteger(ingestionJobId) || ingestionJobId < 1) return;
+    loadJob();
+    loadFileIssues();
+  }, [ingestionJobId]);
+
+  useEffect(() => {
+    if (!Number.isInteger(ingestionJobId) || ingestionJobId < 1) return;
+    loadProducts();
+  }, [ingestionJobId, page, pageSize, statusFilter, categoryFilter, searchQuery, sortBy, sortOrder]);
+
+  const isAnalyzing = job?.status === "analyzing";
+
+  useEffect(() => {
+    if (!isAnalyzing) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      refreshAll();
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isAnalyzing, ingestionJobId, page, pageSize, statusFilter, categoryFilter, searchQuery, sortBy, sortOrder]);
+
+  // Background refetches stay silent so polling and reviews never blank the page.
+  async function refreshAll() {
+    await Promise.all([
+      loadJob({ silent: true }),
+      loadProducts({ silent: true }),
+      loadFileIssues({ silent: true }),
+    ]);
+  }
+
+  async function loadJob({ silent = false } = {}) {
     try {
-      setLoading(true);
+      if (!silent) setJobLoading(true);
+      const data = await fetchIngestionJob(ingestionJobId);
+      setJob(data);
+    } catch (err) {
+      if (silent) return;
+      setJob(null);
+      showToast(err.message || "Could not load uploaded file.", "error");
+      navigate("/products", { replace: true });
+    } finally {
+      if (!silent) setJobLoading(false);
+    }
+  }
+
+  async function handleRenameGroup() {
+    const current = job?.group_name || job?.filename || "";
+    const nextName = window.prompt("Group name", current);
+    if (nextName == null) return;
+    const trimmed = nextName.trim();
+    if (!trimmed) {
+      showToast("Group name cannot be empty", "error");
+      return;
+    }
+    if (trimmed === current) return;
+
+    try {
+      const updated = await renameIngestionJob(ingestionJobId, trimmed);
+      setJob(updated);
+      showToast("Group renamed", "success");
+    } catch (err) {
+      showToast(err.message || "Failed to rename group", "error");
+    }
+  }
+
+  async function loadProducts({ silent = false } = {}) {
+    try {
+      if (!silent) setLoading(true);
       const data = await fetchProducts({
+        skip: (page - 1) * pageSize,
+        limit: pageSize,
         status: statusFilter || undefined,
         category: categoryFilter || undefined,
-        search: search || undefined,
-        limit: 100,
+        search: searchQuery || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        ingestion_job_id: ingestionJobId,
       });
-      setProducts(data);
+      setProducts(data.items);
+      setTotal(data.total);
+
+      const maxPage = Math.max(1, Math.ceil(data.total / pageSize));
+      if (page > maxPage) {
+        setPage(maxPage);
+      }
+
+      return data;
     } catch (err) {
-      showToast("Failed to load products", "error");
+      if (silent) return null;
+      showToast(err.message || "Failed to load products", "error");
+      setProducts([]);
+      setTotal(0);
+      return null;
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
@@ -53,39 +204,124 @@ export default function Products() {
       const cats = await fetchCategories();
       setCategories(cats);
     } catch (err) {
-      console.error("Failed to load categories:", err);
+      showToast(err.message || "Failed to load categories", "error");
     }
   }
 
-  async function handleSearch(e) {
-    e.preventDefault();
-    loadProducts();
-  }
-
-  async function handleDelete(productId) {
-    if (!confirm("Are you sure you want to delete this product?")) return;
+  async function loadFileIssues({ silent = false } = {}) {
     try {
-      await deleteProduct(productId);
-      showToast("Product deleted", "success");
-      loadProducts();
-      if (selectedProduct?.id === productId) setSelectedProduct(null);
+      if (!silent) setFileIssuesLoading(true);
+      const data = await fetchAllIssues({
+        skip: 0,
+        limit: 50,
+        resolved: false,
+        ingestion_job_id: ingestionJobId,
+      });
+      setIssues(data.items);
+      setIssueTotal(data.total);
     } catch (err) {
-      showToast("Failed to delete product", "error");
+      if (silent) return;
+      setIssues([]);
+      setIssueTotal(0);
+      showToast(err.message || "Could not load quality issues.", "error");
+    } finally {
+      if (!silent) setFileIssuesLoading(false);
     }
   }
 
-  async function handleGenerateContent(productId) {
+  function handleStatusFilterChange(value) {
+    setStatusFilter(value);
+    setPage(1);
+  }
+
+  function handleCategoryFilterChange(value) {
+    setCategoryFilter(value);
+    setPage(1);
+  }
+
+  function handleSort(nextSortBy, nextSortOrder) {
+    setSortBy(nextSortBy);
+    setSortOrder(nextSortOrder);
+    setPage(1);
+  }
+
+  function handlePageSizeChange(nextPageSize) {
+    setPageSize(nextPageSize);
+    setPage(1);
+  }
+
+  async function handleExportWooCommerce() {
+    try {
+      setExporting(true);
+      await exportWooCommerceCsv({
+        status: statusFilter || undefined,
+        category: categoryFilter || undefined,
+        search: searchQuery || undefined,
+        ingestion_job_id: ingestionJobId,
+      });
+      showToast("WooCommerce CSV downloaded", "success");
+    } catch (err) {
+      showToast(err.message || "Failed to export WooCommerce CSV", "error");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleDeleteRequest(product) {
+    const confirmed = await confirm({
+      title: "Delete Product",
+      message: `Are you sure you want to delete "${product.title}"? This action cannot be undone.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+
+    try {
+      await deleteProduct(product.id);
+      showToast("Product deleted", "success");
+      refreshAll();
+      if (selectedProduct?.id === product.id) setSelectedProduct(null);
+    } catch (err) {
+      showToast(err.message || "Failed to delete product", "error");
+    }
+  }
+
+  function handleGenerateContent(productId) {
+    const product = products.find((item) => item.id === productId) || selectedProduct;
+    const productTitle = product?.title || `Product #${productId}`;
+    setGenerateTarget({ id: productId, title: productTitle });
+  }
+
+  function handleCancelGenerateContent() {
+    if (generating) return;
+    setGenerateTarget(null);
+  }
+
+  async function handleConfirmGenerateContent({ tone, includeSeo }) {
+    if (!generateTarget) return;
+
+    const productId = generateTarget.id;
+
     try {
       setGenerating(true);
-      const result = await generateSingleContent(productId);
-      showToast("Content generated successfully", "success");
-      loadProducts();
+      const result = await generateSingleContent(productId, tone, includeSeo);
+      if (result.warnings?.length) {
+        showToast(`Content generated with ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`, "warning");
+      } else {
+        showToast("Content generated successfully", "success");
+      }
+      setGenerateTarget(null);
+      await loadProducts({ silent: true });
       if (selectedProduct?.id === productId) {
+        const nextIssues = await fetchProductIssues(productId);
+        setProductIssues(nextIssues);
         setSelectedProduct({
           ...selectedProduct,
           generated_description: result.generated_description,
           seo_title: result.seo_title,
           seo_keywords: result.seo_keywords,
+          issue_count: nextIssues.filter((issue) => !issue.resolved).length,
         });
       }
     } catch (err) {
@@ -97,29 +333,231 @@ export default function Products() {
 
   async function handleViewDetails(product) {
     setSelectedProduct(product);
+    setProductIssues([]);
+    setIssuesLoading(true);
+
     try {
-      const issues = await fetchProductIssues(product.id);
-      setProductIssues(issues);
+      const nextIssues = await fetchProductIssues(product.id);
+      setProductIssues(nextIssues);
     } catch (err) {
       setProductIssues([]);
+      showToast(err.message || "Failed to load product issues", "error");
+    } finally {
+      setIssuesLoading(false);
     }
   }
 
-  function showToast(message, type = "info") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  function handleCloseDetails() {
+    if (generating || saving) return;
+    setSelectedProduct(null);
+    setProductIssues([]);
+    setIssuesLoading(false);
+  }
+
+  async function handleSaveProduct(productId, payload) {
+    try {
+      setSaving(true);
+      const updated = await updateProduct(productId, payload);
+      showToast("Product updated and quality checks re-run", "success");
+      await loadProducts({ silent: true });
+      setSelectedProduct(updated);
+      const nextIssues = await fetchProductIssues(productId);
+      setProductIssues(nextIssues);
+      await loadFileIssues({ silent: true });
+    } catch (err) {
+      showToast(err.message || "Failed to update product", "error");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /**
+   * Reload the open product detail so Apply/Edit values show immediately.
+   *
+   * @param {number} productId
+   * @returns {Promise<void>}
+   */
+  async function syncOpenProduct(productId) {
+    if (selectedProduct?.id !== productId) return;
+    const [updated, nextIssues] = await Promise.all([
+      fetchProduct(productId),
+      fetchProductIssues(productId),
+    ]);
+    setProductIssues(nextIssues);
+    setSelectedProduct({
+      ...updated,
+      issue_count: nextIssues.filter((item) => !item.resolved).length,
+    });
+  }
+
+  async function handleReviewIssue(issue, action, editedValue) {
+    try {
+      await reviewIssue(issue.id, action, editedValue);
+      const labels = {
+        accept: "accepted",
+        edit: "saved",
+        reject: "rejected",
+      };
+      showToast(`Issue ${labels[action] || action}.`, "success");
+      await refreshAll();
+      await syncOpenProduct(issue.product_id);
+    } catch (err) {
+      showToast(err.message || "Could not review issue.", "error");
+      throw err;
+    }
+  }
+
+  async function handleAcceptAllIssues(group) {
+    const applicable = group.issues.filter(
+      (issue) => issue.field_name && issue.suggested_value
+    );
+    const confirmed = await confirm({
+      title: "Accept All Fixes",
+      message: applicable.length
+        ? `Apply ${applicable.length} suggested fix${applicable.length === 1 ? "" : "es"} for ${group.sku}?`
+        : `No suggested fixes to apply for ${group.sku}.`,
+      confirmLabel: "Accept all",
+      cancelLabel: "Cancel",
+      variant: "primary",
+    });
+    if (!confirmed || applicable.length === 0) return;
+
+    try {
+      setBusyProductId(group.productId);
+      const result = await acceptProductIssues(group.productId);
+      const skippedNote = result.skipped > 0 ? ` (${result.skipped} skipped)` : "";
+      showToast(`${result.accepted} fix${result.accepted === 1 ? "" : "es"} accepted${skippedNote}.`, "success");
+      await refreshAll();
+      await syncOpenProduct(group.productId);
+    } catch (err) {
+      showToast(err.message || "Could not accept product fixes.", "error");
+    } finally {
+      setBusyProductId(null);
+    }
+  }
+
+  async function handleIgnoreAllIssues(group) {
+    const confirmed = await confirm({
+      title: "Ignore All Issues",
+      message: `Close all ${group.issues.length} open issue${group.issues.length === 1 ? "" : "s"} for ${group.sku} without changing the product?`,
+      confirmLabel: "Ignore all",
+      cancelLabel: "Cancel",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+
+    try {
+      setBusyProductId(group.productId);
+      for (const issue of group.issues) {
+        await reviewIssue(issue.id, "reject");
+      }
+      showToast(`${group.issues.length} issue${group.issues.length === 1 ? "" : "s"} ignored.`, "success");
+      await refreshAll();
+      await syncOpenProduct(group.productId);
+    } catch (err) {
+      showToast(err.message || "Could not ignore product issues.", "error");
+    } finally {
+      setBusyProductId(null);
+    }
+  }
+
+  if (jobLoading && !job) {
+    return (
+      <div className="loading">
+        <div className="spinner" />
+        Loading file products...
+      </div>
+    );
   }
 
   return (
-    <div className="animate-in">
-      <div className="page-header">
-        <h2>Products</h2>
-        <p>Manage your product catalog</p>
+    <>
+      <div className="animate-in">
+      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <button
+            className="btn btn-ghost btn-sm file-products-back"
+            onClick={() => navigate("/products")}
+            type="button"
+          >
+            <ArrowLeft size={16} />
+            All Groups
+          </button>
+          <div className="file-products-title-row">
+            <h2>{job?.group_name || job?.filename || "Product Group"}</h2>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={handleRenameGroup}
+              type="button"
+              title="Rename group"
+              aria-label="Rename group"
+              disabled={!job}
+            >
+              <Pencil size={14} />
+            </button>
+          </div>
+          <p className="file-products-meta">
+            <span>
+              {total} product{total === 1 ? "" : "s"} in this group
+            </span>
+            {job?.filename ? (
+              <span title="Last uploaded CSV" style={{ color: "var(--text-muted)" }}>
+                {job.filename}
+              </span>
+            ) : null}
+            {formatSkipBreakdown(job) ? (
+              <span title={formatSkipBreakdown(job)} style={{ color: "var(--accent-orange)" }}>
+                {formatSkipBreakdown(job)}
+              </span>
+            ) : null}
+            {isAnalyzing ? (
+              <span className="ai-analyzing-status" aria-live="polite">
+                <span
+                  className="spinner"
+                  aria-hidden="true"
+                  style={{ width: 14, height: 14, borderWidth: 2, margin: 0 }}
+                />
+                AI analysis is still running
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <div className="page-header-actions">
+          <button
+            className="btn btn-ghost"
+            onClick={() => setIssuesDialogOpen(true)}
+            type="button"
+          >
+            <AlertTriangle size={16} />
+            Review Issues
+            {issueTotal > 0 ? (
+              <span className="badge badge-high">{issueTotal}</span>
+            ) : null}
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={exporting || loading || total === 0}
+            onClick={handleExportWooCommerce}
+            type="button"
+          >
+            {exporting ? (
+              <>
+                <div className="spinner" style={{ width: 16, height: 16, borderWidth: 2, margin: 0 }} />
+                Exporting...
+              </>
+            ) : (
+              <>
+                <Download size={16} />
+                Export WooCommerce CSV
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* Toolbar */}
       <div className="toolbar">
-        <form onSubmit={handleSearch} className="search-input">
+        <div className="search-input">
           <div style={{ position: "relative" }}>
             <Search
               size={16}
@@ -134,158 +572,92 @@ export default function Products() {
             <input
               type="search"
               placeholder="Search by title, SKU, or brand..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               style={{ paddingLeft: 36 }}
             />
           </div>
-        </form>
+        </div>
         <div className="filters-row">
-          <select
+          <Select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          >
-            <option value="">All Statuses</option>
-            <option value="active">Active</option>
-            <option value="draft">Draft</option>
-            <option value="flagged">Flagged</option>
-            <option value="archived">Archived</option>
-          </select>
-          <select
+            onChange={handleStatusFilterChange}
+            placeholder="All Statuses"
+            ariaLabel="Filter by status"
+            options={[
+              { value: "", label: "All Statuses" },
+              { value: "active", label: "Active" },
+              { value: "draft", label: "Draft" },
+              { value: "flagged", label: "Flagged" },
+              { value: "archived", label: "Archived" },
+            ]}
+          />
+          <Select
             value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <option value="">All Categories</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
+            onChange={handleCategoryFilterChange}
+            placeholder="All Categories"
+            ariaLabel="Filter by category"
+            options={[
+              { value: "", label: "All Categories" },
+              ...categories.map((cat) => ({ value: cat, label: cat })),
+            ]}
+          />
         </div>
       </div>
 
-      {/* Product Table */}
       <ProductTable
         products={products}
         loading={loading}
-        onDelete={handleDelete}
+        onDelete={handleDeleteRequest}
         onGenerateContent={handleGenerateContent}
         onViewDetails={handleViewDetails}
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSort={handleSort}
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={setPage}
+        onPageSizeChange={handlePageSizeChange}
+        emptyTitle="No products in this file"
+        emptyDescription="This upload did not create or update any products that match the current filters."
       />
 
-      {/* Product Detail Panel */}
-      {selectedProduct && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            right: 0,
-            bottom: 0,
-            width: 520,
-            background: "var(--bg-secondary)",
-            borderLeft: "1px solid var(--border-color)",
-            zIndex: 200,
-            overflow: "auto",
-            padding: 24,
-            boxShadow: "-8px 0 30px rgba(0,0,0,0.5)",
-            animation: "slideIn 0.3s ease",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <h3>{selectedProduct.title}</h3>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setSelectedProduct(null)}
-            >
-              <X size={16} />
-            </button>
-          </div>
+      </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>SKU</span>
-              <p style={{ fontFamily: "monospace" }}>{selectedProduct.sku}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Price</span>
-              <p>{selectedProduct.price ? `${selectedProduct.currency} ${selectedProduct.price.toFixed(2)}` : "N/A"}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Category</span>
-              <p>{selectedProduct.category || "N/A"}</p>
-            </div>
-            <div>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Brand</span>
-              <p>{selectedProduct.brand || "N/A"}</p>
-            </div>
-          </div>
+      <QualityIssuesDialog
+        open={issuesDialogOpen}
+        onClose={() => setIssuesDialogOpen(false)}
+        issues={issues}
+        products={products}
+        issueTotal={issueTotal}
+        loading={fileIssuesLoading}
+        isAnalyzing={isAnalyzing}
+        busyProductId={busyProductId}
+        onReview={handleReviewIssue}
+        onAcceptAll={handleAcceptAllIssues}
+        onIgnoreAll={handleIgnoreAllIssues}
+      />
 
-          {/* Attributes */}
-          {selectedProduct.attributes && Object.keys(selectedProduct.attributes).length > 0 && (
-            <div style={{ marginBottom: 20 }}>
-              <h4 style={{ fontSize: "0.85rem", marginBottom: 8 }}>Attributes</h4>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {Object.entries(selectedProduct.attributes).map(([key, val]) => (
-                  <span
-                    key={key}
-                    style={{
-                      padding: "4px 10px",
-                      background: "var(--bg-input)",
-                      borderRadius: 50,
-                      fontSize: "0.78rem",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    <strong style={{ color: "var(--text-secondary)" }}>{key}:</strong>{" "}
-                    {String(val)}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+      <ProductDetailDialog
+        product={selectedProduct}
+        issues={productIssues}
+        issuesLoading={issuesLoading}
+        generating={generating}
+        saving={saving}
+        onClose={handleCloseDetails}
+        onGenerateContent={handleGenerateContent}
+        onSave={handleSaveProduct}
+        onReviewIssue={handleReviewIssue}
+      />
 
-          {/* Content */}
-          <div style={{ marginBottom: 20 }}>
-            <ContentPreview product={selectedProduct} />
-          </div>
-
-          {!selectedProduct.generated_description && (
-            <button
-              className="btn btn-primary"
-              onClick={() => handleGenerateContent(selectedProduct.id)}
-              disabled={generating}
-              style={{ width: "100%", justifyContent: "center", marginBottom: 20 }}
-            >
-              {generating ? (
-                <>
-                  <div className="spinner" style={{ width: 16, height: 16, borderWidth: 2, margin: 0 }} />
-                  Generating...
-                </>
-              ) : (
-                "Generate SEO Description"
-              )}
-            </button>
-          )}
-
-          {/* Issues */}
-          {productIssues.length > 0 && (
-            <div>
-              <h4 style={{ fontSize: "0.85rem", marginBottom: 10 }}>
-                Data Issues ({productIssues.length})
-              </h4>
-              {productIssues.map((issue) => (
-                <DataIssueCard key={issue.id} issue={issue} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast ${toast.type}`}>{toast.message}</div>
-        </div>
-      )}
-    </div>
+      <GenerateContentDialog
+        open={Boolean(generateTarget)}
+        productTitle={generateTarget?.title ?? ""}
+        loading={generating}
+        onCancel={handleCancelGenerateContent}
+        onConfirm={handleConfirmGenerateContent}
+      />
+    </>
   );
 }
