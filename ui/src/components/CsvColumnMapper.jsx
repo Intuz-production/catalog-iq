@@ -23,6 +23,12 @@ const FIELD_LABELS = {
 };
 
 /**
+ * @typedef {Object} ColumnMappingConfig
+ * @property {"standard" | "custom" | "ignore"} type
+ * @property {string} value
+ */
+
+/**
  * @typedef {Object} CsvColumnMapperProps
  * @property {string} filename
  * @property {string} encoding
@@ -31,8 +37,8 @@ const FIELD_LABELS = {
  * @property {string[]} columns
  * @property {string[]} standardFields
  * @property {string[]} [warnings]
- * @property {Record<string, string>} mapping
- * @property {(column: string, field: string) => void} onMappingChange
+ * @property {Record<string, ColumnMappingConfig>} mapping
+ * @property {(column: string, config: ColumnMappingConfig) => void} onMappingChange
  * @property {boolean} ingesting
  * @property {() => void} onCancel
  * @property {() => void} onConfirm
@@ -53,17 +59,16 @@ export default function CsvColumnMapper({
   onCancel,
   onConfirm,
 }) {
-  const hasSku = Boolean(mapping.sku);
-  const fieldByColumn = Object.fromEntries(
-    Object.entries(mapping)
-      .filter(([, column]) => Boolean(column))
-      .map(([field, column]) => [column, field])
-  );
+  const hasSku = Object.values(mapping).some((m) => m.type === "standard" && m.value === "sku");
+  const skuColumn = Object.entries(mapping).find(
+    ([, m]) => m.type === "standard" && m.value === "sku"
+  )?.[0];
 
   const fieldOptions = [
-    { value: "", label: "Ignore" },
+    { value: "__custom__", label: "Custom Attribute..." },
+    { value: "__ignore__", label: "Ignore Column" },
     ...standardFields.map((field) => ({
-      value: field,
+      value: `__standard__${field}`,
       label: field === "sku" ? `${FIELD_LABELS[field] || field} *` : FIELD_LABELS[field] || field,
     })),
   ];
@@ -88,24 +93,52 @@ export default function CsvColumnMapper({
       )}
 
       <p className="csv-mapper-required">
-        SKU * · {hasSku ? mapping.sku : "Not mapped"}
+        SKU * · {hasSku ? skuColumn : "Not mapped"}
       </p>
 
       <div className="csv-mapper-fields">
-        {columns.map((column) => (
-          <label key={column} className="csv-mapper-field">
-            <span>{column}</span>
-            <Select
-              size="sm"
-              value={fieldByColumn[column] || ""}
-              onChange={(field) => onMappingChange(column, field)}
-              options={fieldOptions}
-              placeholder="Ignore"
-              ariaLabel={`Map ${column} to catalog field`}
-              disabled={ingesting}
-            />
-          </label>
-        ))}
+        {columns.map((column) => {
+          const config = mapping[column] || { type: "ignore", value: "" };
+          let selectValue = "__ignore__";
+          if (config.type === "standard") selectValue = `__standard__${config.value}`;
+          if (config.type === "custom") selectValue = "__custom__";
+
+          return (
+            <div key={column} className="csv-mapper-field">
+              <label>
+                <span>{column}</span>
+                <Select
+                  size="sm"
+                  value={selectValue}
+                  onChange={(val) => {
+                    if (val === "__ignore__") {
+                      onMappingChange(column, { type: "ignore", value: "" });
+                    } else if (val === "__custom__") {
+                      onMappingChange(column, { type: "custom", value: column });
+                    } else if (val.startsWith("__standard__")) {
+                      onMappingChange(column, { type: "standard", value: val.replace("__standard__", "") });
+                    }
+                  }}
+                  options={fieldOptions}
+                  placeholder="Select mapping"
+                  ariaLabel={`Map ${column} to catalog field`}
+                  disabled={ingesting}
+                />
+              </label>
+              {config.type === "custom" && (
+                <input
+                  type="text"
+                  className="csv-mapper-custom-input"
+                  value={config.value}
+                  onChange={(e) => onMappingChange(column, { type: "custom", value: e.target.value })}
+                  placeholder="Attribute name"
+                  disabled={ingesting}
+                  aria-label={`Custom attribute name for ${column}`}
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="csv-mapper-actions">

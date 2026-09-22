@@ -310,17 +310,15 @@ def _resolve_column_map(
 
     df_columns_lower = {col.lower().strip(): col for col in df.columns}
     resolved: dict[str, str] = {}
-    for standard_name, csv_column in column_mapping.items():
-        if standard_name not in COLUMN_MAPPINGS:
-            continue
+    for target_name, csv_column in column_mapping.items():
         if not csv_column or not str(csv_column).strip():
             continue
         lookup = str(csv_column).lower().strip()
         if lookup not in df_columns_lower:
             raise CsvParseError(
-                f"Mapped column '{csv_column}' for '{standard_name}' was not found in the CSV."
+                f"Mapped column '{csv_column}' for '{target_name}' was not found in the CSV."
             )
-        resolved[standard_name] = df_columns_lower[lookup]
+        resolved[target_name] = df_columns_lower[lookup]
     return resolved
 
 
@@ -427,6 +425,16 @@ def _extract_attributes(row: pd.Series, column_map: dict[str, str]) -> dict[str,
         if raw_value:
             attributes[field] = normalize_attribute_value(field, raw_value)
 
+    # Process custom mapped fields explicitly provided by the user
+    for target_name, csv_col in column_map.items():
+        if target_name.startswith("__ignore__"):
+            continue
+        if target_name not in STANDARD_FIELDS and target_name not in attribute_fields:
+            raw_value = _mapped_cell(row, column_map, target_name)
+            if raw_value:
+                attributes[target_name] = normalize_attribute_value(target_name, raw_value)
+
+    # Fallback: Extract any unmapped CSV columns as custom attributes (unless ignored)
     known_cols = set(column_map.values())
     for col in row.index:
         if col not in known_cols:
