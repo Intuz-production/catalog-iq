@@ -1,46 +1,25 @@
 /**
  * CatalogIQ — API Client
  *
- * Centralized HTTP client for communicating with the FastAPI backend.
+ * Domain API functions for the FastAPI backend.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-/**
- * Generic fetch wrapper with error handling.
- */
-async function request(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint}`;
-  const config = {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  };
-
-  // Don't set Content-Type for FormData
-  if (options.body instanceof FormData) {
-    delete config.headers["Content-Type"];
-  }
-
-  const response = await fetch(url, config);
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || `Request failed: ${response.status}`);
-  }
-
-  if (response.status === 204) return null;
-  return response.json();
-}
+import { request, downloadRequest } from "./http";
 
 // ---- Products ----
 
 export async function fetchProducts(params = {}) {
   const query = new URLSearchParams();
-  if (params.skip) query.set("skip", params.skip);
-  if (params.limit) query.set("limit", params.limit);
+  if (params.skip !== undefined) query.set("skip", params.skip);
+  if (params.limit !== undefined) query.set("limit", params.limit);
   if (params.status) query.set("status", params.status);
   if (params.search) query.set("search", params.search);
   if (params.category) query.set("category", params.category);
+  if (params.ingestion_job_id !== undefined) {
+    query.set("ingestion_job_id", params.ingestion_job_id);
+  }
+  if (params.sort_by) query.set("sort_by", params.sort_by);
+  if (params.sort_order) query.set("sort_order", params.sort_order);
   return request(`/api/products/?${query}`);
 }
 
@@ -71,41 +50,118 @@ export async function fetchProductIssues(id) {
   return request(`/api/products/${id}/issues`);
 }
 
+export async function exportWooCommerceCsv(params = {}) {
+  const query = new URLSearchParams();
+  if (params.status) query.set("status", params.status);
+  if (params.search) query.set("search", params.search);
+  if (params.category) query.set("category", params.category);
+  if (params.ingestion_job_id !== undefined) {
+    query.set("ingestion_job_id", params.ingestion_job_id);
+  }
+  const suffix = query.toString() ? `?${query}` : "";
+  return downloadRequest(
+    `/api/products/export/woocommerce${suffix}`,
+    "catalogiq-woocommerce.csv"
+  );
+}
+
 // ---- Ingestion ----
 
-export async function uploadCSV(file) {
+export async function downloadSampleCsv() {
+  return downloadRequest("/api/ingestion/sample-csv", "sample_products.csv");
+}
+
+export async function previewCSV(file) {
   const formData = new FormData();
   formData.append("file", file);
+  return request("/api/ingestion/preview", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function uploadCSV(file, columnMapping, options = {}) {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (columnMapping) {
+    formData.append("column_mapping", JSON.stringify(columnMapping));
+  }
+  if (options.ingestionJobId != null) {
+    formData.append("ingestion_job_id", String(options.ingestionJobId));
+  }
+  if (options.groupName != null && String(options.groupName).trim()) {
+    formData.append("group_name", String(options.groupName).trim());
+  }
   return request("/api/ingestion/upload", {
     method: "POST",
     body: formData,
   });
 }
 
-export async function fetchIngestionJobs(limit = 20) {
-  return request(`/api/ingestion/jobs?limit=${limit}`);
+export async function fetchIngestionJobs(params = {}) {
+  const query = new URLSearchParams();
+  if (params.skip !== undefined) query.set("skip", params.skip);
+  if (params.limit !== undefined) query.set("limit", params.limit);
+  if (params.status) query.set("status", params.status);
+  if (params.search) query.set("search", params.search);
+  if (params.sort_by) query.set("sort_by", params.sort_by);
+  if (params.sort_order) query.set("sort_order", params.sort_order);
+  return request(`/api/ingestion/jobs?${query}`);
 }
 
-export async function fetchAllIssues(resolved = false, limit = 100) {
-  return request(`/api/ingestion/issues?resolved=${resolved}&limit=${limit}`);
+export async function fetchIngestionJob(jobId) {
+  return request(`/api/ingestion/jobs/${jobId}`);
+}
+
+export async function renameIngestionJob(jobId, groupName) {
+  return request(`/api/ingestion/jobs/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ group_name: groupName }),
+  });
+}
+
+export async function deleteIngestionJob(jobId) {
+  return request(`/api/ingestion/jobs/${jobId}`, { method: "DELETE" });
+}
+
+export async function fetchAllIssues(params = {}) {
+  const query = new URLSearchParams();
+  if (params.resolved !== undefined) query.set("resolved", params.resolved);
+  if (params.skip !== undefined) query.set("skip", params.skip);
+  if (params.limit !== undefined) query.set("limit", params.limit);
+  if (params.search) query.set("search", params.search);
+  if (params.severity) query.set("severity", params.severity);
+  if (params.issue_type) query.set("issue_type", params.issue_type);
+  if (params.sort_by) query.set("sort_by", params.sort_by);
+  if (params.sort_order) query.set("sort_order", params.sort_order);
+  if (params.ingestion_job_id !== undefined) {
+    query.set("ingestion_job_id", params.ingestion_job_id);
+  }
+  return request(`/api/ingestion/issues?${query}`);
 }
 
 export async function resolveIssue(issueId) {
   return request(`/api/ingestion/issues/${issueId}/resolve`, { method: "PUT" });
 }
 
-// ---- Content Generation ----
-
-export async function generateContent(productIds, tone = "professional", includeSeo = true) {
-  return request("/api/content/generate", {
+export async function acceptProductIssues(productId) {
+  return request("/api/ingestion/issues/accept-bulk", {
     method: "POST",
+    body: JSON.stringify({ product_ids: [productId] }),
+  });
+}
+
+export async function reviewIssue(issueId, action, editedValue) {
+  return request(`/api/ingestion/issues/${issueId}/review`, {
+    method: "PUT",
     body: JSON.stringify({
-      product_ids: productIds,
-      tone,
-      include_seo: includeSeo,
+      action,
+      ...(editedValue !== undefined ? { edited_value: editedValue } : {}),
     }),
   });
 }
+
+// ---- Content Generation ----
 
 export async function generateSingleContent(productId, tone = "professional", includeSeo = true) {
   return request(
@@ -114,11 +170,18 @@ export async function generateSingleContent(productId, tone = "professional", in
   );
 }
 
-export async function fetchProductsNeedingContent(limit = 50) {
-  return request(`/api/content/needs-content?limit=${limit}`);
-}
-
 // ---- Competitors ----
+
+let competitorConfigCache = null;
+
+export async function fetchCompetitorConfig({ force = false } = {}) {
+  if (!force && competitorConfigCache) {
+    return competitorConfigCache;
+  }
+
+  competitorConfigCache = await request("/api/competitors/config");
+  return competitorConfigCache;
+}
 
 export async function triggerCompetitorScrape(productIds = null, sources = null) {
   const body = {};
