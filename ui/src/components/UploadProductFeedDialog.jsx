@@ -175,8 +175,16 @@ export default function UploadProductFeedDialog({ open, onClose, onUploaded }) {
       setPreviewLoading(true);
       const data = await previewCSV(file);
       const nextMapping = {};
-      data.standard_fields.forEach((field) => {
-        nextMapping[field] = data.suggested_mapping[field] || "";
+      data.columns.forEach((col) => {
+        const standardField = Object.entries(data.suggested_mapping).find(
+          ([, mappedCol]) => mappedCol === col
+        )?.[0];
+        
+        if (standardField) {
+          nextMapping[col] = { type: "standard", value: standardField };
+        } else {
+          nextMapping[col] = { type: "custom", value: col };
+        }
       });
       setPendingFile(file);
       setPreview(data);
@@ -196,17 +204,17 @@ export default function UploadProductFeedDialog({ open, onClose, onUploaded }) {
     }
   }
 
-  function handleMappingChange(column, field) {
+  function handleMappingChange(column, nextConfig) {
     setColumnMapping((current) => {
       const next = { ...current };
-      for (const [mappedField, mappedColumn] of Object.entries(next)) {
-        if (mappedColumn === column) {
-          next[mappedField] = "";
+      if (nextConfig.type === "standard") {
+        for (const [col, config] of Object.entries(next)) {
+          if (config.type === "standard" && config.value === nextConfig.value && col !== column) {
+            next[col] = { type: "custom", value: col };
+          }
         }
       }
-      if (field) {
-        next[field] = column;
-      }
+      next[column] = nextConfig;
       return next;
     });
   }
@@ -266,9 +274,16 @@ export default function UploadProductFeedDialog({ open, onClose, onUploaded }) {
     });
     if (!confirmed) return;
 
-    const mappingPayload = Object.fromEntries(
-      Object.entries(columnMapping).filter(([, column]) => Boolean(column))
-    );
+    const mappingPayload = {};
+    for (const [col, config] of Object.entries(columnMapping)) {
+      if (config.type === "ignore") {
+        mappingPayload[`__ignore__${col}`] = col;
+      } else if (config.value && String(config.value).trim()) {
+        mappingPayload[config.value] = col;
+      } else {
+        mappingPayload[`__ignore__${col}`] = col;
+      }
+    }
 
     try {
       setUploading(true);
