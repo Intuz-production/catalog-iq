@@ -10,6 +10,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
+from app.services.product_field_utils import normalize_product_update_data
 from app.models.schemas import (
     Product, DataIssue, CompetitorAlert, IngestionJob, IngestionJobProduct,
     ProductStatus, ProductSortField, SortOrder,
@@ -79,8 +80,8 @@ def get_products(
     search: Optional[str] = None,
     category: Optional[str] = None,
     ingestion_job_id: Optional[int] = None,
-    sort_by: ProductSortField = ProductSortField.UPDATED_AT,
-    sort_order: SortOrder = SortOrder.DESC,
+    sort_by: ProductSortField = ProductSortField.TITLE,
+    sort_order: SortOrder = SortOrder.ASC,
 ) -> tuple[list[Product], int]:
     """Retrieve products with optional filtering, sorting, and pagination.
 
@@ -107,7 +108,7 @@ def get_products(
     )
     total = query.count()
 
-    sort_column = SORT_COLUMNS.get(sort_by, Product.updated_at)
+    sort_column = SORT_COLUMNS.get(sort_by, Product.title)
     if sort_order == SortOrder.ASC:
         query = query.order_by(sort_column.asc())
     else:
@@ -207,7 +208,10 @@ def update_product(db: Session, product_id: int, updates: ProductUpdate) -> Opti
     if not product:
         return None
 
-    update_data = updates.model_dump(exclude_unset=True)
+    update_data = normalize_product_update_data(
+        product,
+        updates.model_dump(exclude_unset=True),
+    )
     for field, value in update_data.items():
         setattr(product, field, value)
 

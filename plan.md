@@ -43,10 +43,10 @@ The platform uses a FastAPI backend exposing REST APIs consumed by a React front
                            |  | Data Normalizer   |  |
                            |  +-------------------+  |
                            |                         |
-                           |  +-------------------+  |       +----------+
-                           |  | Content Generator |--+-----> | Groq API |
-                           |  | (SEO Descriptions)|  |       | (LLaMA)  |
-                           |  +-------------------+  |       +----------+
+                           |  +-------------------+  |       +----------------+
+                           |  | Content Generator |--+-----> | LLM (Groq /    |
+                           |  | (SEO Descriptions)|  |       | OpenAI / Gemini)|
+                           |  +-------------------+  |       +----------------+
                            |                         |
                            |  +-------------------+  |       +------------------+
                            |  | Competitor Monitor|--+-----> | Amazon / Walmart |
@@ -62,7 +62,7 @@ The platform uses a FastAPI backend exposing REST APIs consumed by a React front
 | Layer | Technology | Purpose |
 |-------|------------|---------|
 | Backend | FastAPI (Python) | High-performance async REST API for all three pipelines and frontend communication |
-| AI/ML | Groq API + GPT-OSS 120B | Fast inference for product description generation |
+| AI/ML | Groq / OpenAI / Gemini via `LLM_PROVIDER` | Product descriptions and AI ingest analysis |
 | Storage | PostgreSQL + SQLAlchemy | Structured storage for products, users, normalized attributes, competitor snapshots, and flagged issues |
 | Frontend | React (Vite) | Modern SPA dashboard for product management, content review, and competitor monitoring |
 | Scraping | httpx + BeautifulSoup4 | Lightweight async HTTP client and HTML parser for competitor marketplace scraping |
@@ -77,7 +77,9 @@ The platform uses a FastAPI backend exposing REST APIs consumed by a React front
 - [x] Complete runnable Python backend in `catalog-iq/app/`
 - [x] React frontend dashboard in `catalog-iq/ui/`
 - [x] CSV ingestion and data normalization pipeline with contradiction flagging
-- [x] LLM-powered SEO product description generator using Groq
+- [x] LLM-powered SEO product description generator (pluggable providers)
+- [x] AI ingest analysis and issue review (feature branch enhancements)
+- [x] Custom CSV column mapping and WooCommerce export (feature branch)
 - [x] Competitor price and stock scraper for Amazon, Walmart, and Flipkart
 - [x] PostgreSQL database schema with migrations (startup migrations; Alembic pending)
 - [x] Sample CSV product data for demo
@@ -105,6 +107,7 @@ catalog-iq/
 │   │   ├── content_service.py        # LLM-powered description generation
 │   │   ├── competitor_service.py     # Marketplace scraping and monitoring
 │   │   ├── product_service.py        # Product CRUD operations
+│   │   ├── product_field_utils.py    # Shared catalog field apply helpers
 │   │   ├── user_service.py           # User account helpers
 │   │   ├── auth_service.py           # Login and JWT issuance
 │   │   └── seed_service.py           # Default admin user seeder
@@ -143,28 +146,32 @@ catalog-iq/
 │   │   │   │   ├── auth-provider.jsx # Auth state provider component
 │   │   │   │   └── protected-route.jsx # Route guard for authenticated pages
 │   │   │   ├── Layout.jsx            # App shell with navigation
-│   │   │   ├── ProductTable.jsx      # Product listing with filters
-│   │   │   ├── DataIssueCard.jsx     # Flagged contradiction display
+│   │   │   ├── ProductTable.jsx      # Product listing (default sort: title)
+│   │   │   ├── ProductDetailDialog.jsx
+│   │   │   ├── AiThoughtPanel.jsx    # Give a Thought AI edits
+│   │   │   ├── DataIssueCard.jsx     # Issue accept / ignore / edit
 │   │   │   ├── ContentPreview.jsx    # Generated description preview
 │   │   │   └── CompetitorChart.jsx   # Price trend visualization
+│   │   ├── lib/
+│   │   │   ├── product-update-map.js
+│   │   │   └── issue-fields.js
 │   │   ├── pages/
-│   │   │   ├── Login.jsx             # Email/password sign-in page
-│   │   │   ├── Dashboard.jsx         # Overview with key metrics
-│   │   │   ├── Products.jsx          # Product catalog management
-│   │   │   ├── Ingestion.jsx         # CSV upload and normalization
-│   │   │   ├── ContentGen.jsx        # Content generation interface
-│   │   │   └── Competitors.jsx       # Competitor monitoring view
-│   │   └── styles/
-│   │       └── index.css             # Global styles
-│   └── public/
+│   │   │   ├── Login.jsx
+│   │   │   ├── Dashboard.jsx
+│   │   │   ├── Ingestion.jsx         # Job list (/products)
+│   │   │   ├── Products.jsx          # Job catalog (/products/:jobId)
+│   │   │   └── Competitors.jsx       # Optional; not in default nav
+│   │   └── index.css
 ├── data/
 │   └── sample_products.csv           # Demo product data
 ├── tests/
 │   ├── __init__.py
-│   ├── test_ingestion.py             # Ingestion pipeline tests
-│   ├── test_content.py               # Content generation tests
-│   ├── test_competitors.py           # Competitor scraping tests
-│   └── test_auth.py                  # Password hashing and JWT tests
+│   ├── test_ingestion.py
+│   ├── test_ingestion_review.py      # Issue accept / reject
+│   ├── test_product_field_utils.py
+│   ├── test_content.py
+│   ├── test_competitors.py
+│   └── test_auth.py
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
@@ -179,11 +186,15 @@ catalog-iq/
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GROQ_API_KEY` | Yes | -- | API key from https://console.groq.com/keys |
-| `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Groq model to use for content generation |
-| `DATABASE_URL` | Yes | -- | PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/catalogiq`) |
+| `LLM_PROVIDER` | No | `groq` | Active LLM backend: `groq`, `openai`, or `gemini` |
+| `LLM_MODEL` | No | `openai/gpt-oss-120b` | Model id for the active provider |
+| `GROQ_API_KEY` | If groq | -- | Groq API key |
+| `OPENAI_API_KEY` | If openai | -- | OpenAI API key |
+| `GEMINI_API_KEY` | If gemini | -- | Google Gemini API key |
+| `DATABASE_URL` | Yes | -- | PostgreSQL connection string |
 | `FASTAPI_HOST` | No | `0.0.0.0` | Host for the FastAPI server |
 | `FASTAPI_PORT` | No | `8000` | Port for the FastAPI server |
+| `SCRAPE_REGION` | No | `us` | Competitor region: `us` or `in` |
 | `SCRAPE_INTERVAL_HOURS` | No | `6` | How often competitor scraping runs (in hours) |
 | `JWT_SECRET_KEY` | No | `change-me-in-production` | Secret used to sign JWT access tokens |
 | `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
@@ -191,7 +202,9 @@ catalog-iq/
 | `DEFAULT_ADMIN_EMAIL` | No | `admin@catalogiq.local` | Email for the default admin user seeded on startup |
 | `DEFAULT_ADMIN_PASSWORD` | No | `admin123` | Password for the default admin user seeded on startup |
 | `DEFAULT_ADMIN_NAME` | No | `Admin` | Display name for the default admin user |
-| `VITE_API_URL` | No | `http://localhost:8000` | Backend API URL for the React frontend |
+| `VITE_API_URL` | No | `http://localhost:8000` | Backend API URL (`ui/.env`) |
+
+See `.env.example` and [README.md](./README.md) for the full variable list.
 
 ---
 

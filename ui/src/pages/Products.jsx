@@ -18,6 +18,7 @@ import ProductDetailDialog from "../components/ProductDetailDialog";
 import QualityIssuesDialog from "../components/QualityIssuesDialog";
 import Select from "../components/Select";
 import { useToast } from "../lib/use-toast";
+import { normalizeProductUpdatePayload } from "../lib/product-update-map";
 import { useConfirm } from "../lib/use-confirm";
 
 const DEFAULT_PAGE_SIZE = 15;
@@ -68,8 +69,8 @@ export default function Products() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
-  const [sortBy, setSortBy] = useState("updated_at");
-  const [sortOrder, setSortOrder] = useState("desc");
+  const [sortBy, setSortBy] = useState("title");
+  const [sortOrder, setSortOrder] = useState("asc");
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productIssues, setProductIssues] = useState([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
@@ -332,7 +333,14 @@ export default function Products() {
   async function handleSaveProduct(productId, payload) {
     try {
       setSaving(true);
-      const updated = await updateProduct(productId, payload);
+      const baseProduct =
+        selectedProduct?.id === productId
+          ? selectedProduct
+          : await fetchProduct(productId);
+      const updated = await updateProduct(
+        productId,
+        normalizeProductUpdatePayload(baseProduct, payload),
+      );
       showToast("Product updated and quality checks re-run", "success");
       await loadProducts({ silent: true });
       setSelectedProduct(updated);

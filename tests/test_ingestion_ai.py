@@ -978,3 +978,23 @@ class TestWooCommerceFieldsIngestionAndAi:
         ingestion_service._apply_field_value(product, "image_url", "https://img.com/p.jpg")
         assert product.image_url == "https://img.com/p.jpg"
 
+    def test_apply_field_value_description_uses_generated_column_when_present(self):
+        product = Product(
+            sku="TEST-2",
+            title="Test Item",
+            description="Original catalog text",
+            generated_description="Generated SEO copy",
+        )
+        ingestion_service._apply_field_value(product, "description", "Updated short copy")
+        assert product.generated_description == "Updated short copy"
+        assert product.description == "Original catalog text"
+
+    def test_apply_field_value_attribute_key_is_case_insensitive(self):
+        product = Product(
+            sku="TEST-3",
+            title="Test Item",
+            attributes={"color": "White"},
+        )
+        ingestion_service._apply_field_value(product, "attributes.Color", "Black")
+        assert product.attributes == {"color": "Black"}
+

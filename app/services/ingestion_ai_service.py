@@ -30,6 +30,7 @@ from app.models.schemas import (
 )
 from app.services.content_service import _extract_json_object, generate_content_for_product
 from app.services.llm import chat_completion
+from app.services.product_field_utils import effective_description_text
 from app.services.ingestion_service import (
     ATTRIBUTE_FIELD_PREFIX,
     LEGACY_ATTRIBUTE_FIELDS,
@@ -254,7 +255,10 @@ def sanitize_rewrite(product: Product, rewrite: dict[str, Any]) -> dict[str, Opt
     sanitized: dict[str, Optional[str]] = {}
 
     for field_name in PRODUCT_REWRITE_FIELDS:
-        original = _stringify(getattr(product, field_name, None))
+        if field_name == "description":
+            original = _stringify(effective_description_text(product))
+        else:
+            original = _stringify(getattr(product, field_name, None))
         suggested = rewrite.get(field_name, original)
         suggested_text = _stringify(suggested)
         if field_name == "title" and not suggested_text:
@@ -478,12 +482,16 @@ def _default_soft_severity(issue_type: IssueType, raw: object) -> IssueSeverity:
 
 def _current_field_value(product: Product, field_name: str) -> Optional[str]:
     """Read the live product value for a rewrite/issue field name."""
+    if field_name == "description":
+        return _stringify(effective_description_text(product))
     if field_name in PRODUCT_REWRITE_FIELDS:
         return _stringify(getattr(product, field_name, None))
     if field_name.startswith(ATTRIBUTE_FIELD_PREFIX):
         attr_key = field_name[len(ATTRIBUTE_FIELD_PREFIX):]
         return _stringify((product.attributes or {}).get(attr_key))
     canonical = _canonical_field_name(field_name)
+    if canonical == "description":
+        return _stringify(effective_description_text(product))
     if canonical in PRODUCT_REWRITE_FIELDS:
         return _stringify(getattr(product, canonical, None))
     if canonical in LEGACY_ATTRIBUTE_FIELDS or canonical in FACT_ATTRIBUTE_FIELDS:

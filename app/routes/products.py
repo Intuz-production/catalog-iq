@@ -38,9 +38,9 @@ def list_products(
         None, description="Limit results to products from one uploaded file"
     ),
     sort_by: ProductSortField = Query(
-        ProductSortField.UPDATED_AT, description="Column to sort by"
+        ProductSortField.TITLE, description="Column to sort by"
     ),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort direction"),
+    sort_order: SortOrder = Query(SortOrder.ASC, description="Sort direction"),
     db: Session = Depends(get_db),
 ) -> ProductListResponse:
     """List products with optional filtering, sorting, and pagination."""

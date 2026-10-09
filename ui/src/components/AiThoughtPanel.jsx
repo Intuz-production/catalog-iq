@@ -8,6 +8,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Sparkles, ChevronRight, Check, X, CheckCheck, XCircle, AlertTriangle } from "lucide-react";
 import { aiThought } from "../api/client";
+import { buildThoughtApplyPayload } from "../lib/product-update-map";
 
 // WooCommerce CSV export field labels (matches woocommerce_export_service.py)
 const FIELD_LABELS = {
@@ -28,33 +29,6 @@ function fieldLabel(field) {
     return key.charAt(0).toUpperCase() + key.slice(1);
   }
   return field.charAt(0).toUpperCase() + field.slice(1);
-}
-
-// Maps an AI-proposed field change to a ProductUpdate-compatible payload entry.
-// Only WooCommerce-exported fields are accepted; anything else is silently ignored.
-const WOO_FIELD_KEYS = new Set([
-  "title", "description", "category", "brand",
-  "price", "stock", "in_stock", "image_url",
-]);
-
-function changeToUpdate(change) {
-  const { field, after } = change;
-  if (WOO_FIELD_KEYS.has(field)) {
-    // Coerce numeric and boolean types that the API expects
-    if (field === "price") {
-      const parsed = parseFloat(after);
-      return { key: "price", value: isNaN(parsed) ? null : parsed };
-    }
-    if (field === "stock") {
-      const parsed = parseInt(after, 10);
-      return { key: "stock", value: isNaN(parsed) ? null : parsed };
-    }
-    if (field === "in_stock") {
-      return { key: "in_stock", value: after === "true" || after === true };
-    }
-    return { key: field, value: after };
-  }
-  return null; // attribute fields handled separately
 }
 
 export default function AiThoughtPanel({ product, saving, onApply, onCancel }) {
@@ -110,23 +84,21 @@ export default function AiThoughtPanel({ product, saving, onApply, onCancel }) {
 
   async function handleApply() {
     if (!changes) return;
-    const selectedChanges = changes.filter((c) => accepted[c.field]);
-    if (selectedChanges.length === 0) { onCancel(); return; }
-    const payload = {};
-    const newAttributes = { ...(product.attributes || {}) };
-    let attributesChanged = false;
-    for (const change of selectedChanges) {
-      const mapped = changeToUpdate(change);
-      if (mapped) {
-        payload[mapped.key] = mapped.value;
-      } else if (change.field.startsWith("attribute:")) {
-        const attrKey = change.field.replace("attribute:", "");
-        newAttributes[attrKey] = change.after;
-        attributesChanged = true;
-      }
+    const selectedChanges = changes.filter((c) => accepted[c.field] === true);
+    if (selectedChanges.length === 0) {
+      onCancel();
+      return;
     }
-    if (attributesChanged) payload.attributes = newAttributes;
-    if (Object.keys(payload).length === 0) { onCancel(); return; }
+    const { payload, unmappedFields } = buildThoughtApplyPayload(product, selectedChanges);
+    if (unmappedFields.length > 0) {
+      setError(`Could not apply selected changes for: ${unmappedFields.join(", ")}.`);
+      return;
+    }
+    if (Object.keys(payload).length === 0) {
+      setError("No applicable changes to save.");
+      return;
+    }
+    setError(null);
     setApplying(true);
     try {
       await onApply(payload);
@@ -135,7 +107,7 @@ export default function AiThoughtPanel({ product, saving, onApply, onCancel }) {
     }
   }
 
-  const acceptedCount = changes ? changes.filter((c) => accepted[c.field]).length : 0;
+  const acceptedCount = changes ? changes.filter((c) => accepted[c.field] === true).length : 0;
   const isBusy = loading || applying || saving;
 
   return (
