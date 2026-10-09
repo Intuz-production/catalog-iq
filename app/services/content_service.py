@@ -336,8 +336,8 @@ def get_products_needing_content(
     skip: int = 0,
     limit: int = 50,
     search: Optional[str] = None,
-    sort_by: ProductSortField = ProductSortField.UPDATED_AT,
-    sort_order: SortOrder = SortOrder.DESC,
+    sort_by: ProductSortField = ProductSortField.TITLE,
+    sort_order: SortOrder = SortOrder.ASC,
 ) -> tuple[list[Product], int]:
     """Find products that need content generation with pagination and sorting."""
     from sqlalchemy import or_
@@ -360,7 +360,7 @@ def get_products_needing_content(
         )
 
     total = query.count()
-    sort_column = SORT_COLUMNS.get(sort_by, Product.updated_at)
+    sort_column = SORT_COLUMNS.get(sort_by, Product.title)
     if sort_order == SortOrder.ASC:
         query = query.order_by(sort_column.asc())
     else:

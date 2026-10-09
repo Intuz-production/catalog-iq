@@ -75,9 +75,9 @@ def get_products_needing_content(
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search in title, SKU, brand"),
     sort_by: ProductSortField = Query(
-        ProductSortField.UPDATED_AT, description="Column to sort by"
+        ProductSortField.TITLE, description="Column to sort by"
     ),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort direction"),
+    sort_order: SortOrder = Query(SortOrder.ASC, description="Sort direction"),
     db: Session = Depends(get_db),
 ) -> ProductListResponse:
     """Get products that need content generation with pagination and sorting."""

@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import Select from "./Select";
+import { descriptionStorageKey } from "../lib/product-update-map";
 
 const STATUS_OPTIONS = [
   { value: "active", label: "Active" },
@@ -73,9 +74,12 @@ export default function ProductEditForm({ product, saving = false, onSubmit, onC
     const stockRaw = String(formData.get("stock") || "").trim();
     const stock = stockRaw !== "" ? Math.max(0, Math.round(Number(stockRaw))) : null;
 
+    const descriptionValue = String(formData.get("description") || "").trim() || null;
+    const descriptionKey = descriptionStorageKey(product);
+
     onSubmit({
       title,
-      description: String(formData.get("description") || "").trim() || null,
+      [descriptionKey]: descriptionValue,
       category: String(formData.get("category") || "").trim() || null,
       brand: String(formData.get("brand") || "").trim() || null,
       price,

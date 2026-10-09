@@ -67,7 +67,16 @@ export default function DataIssueCard({ issue, onResolve, onReview }) {
   const isIgnoreOnly = issue.issue_type === "attribute_not_in_copy";
   const isEditableField =
     !isIgnoreOnly &&
-    (["title", "description", "category", "brand", "price"].includes(issue.field_name) ||
+    ([
+      "title",
+      "description",
+      "category",
+      "brand",
+      "price",
+      "stock",
+      "in_stock",
+      "image_url",
+    ].includes(issue.field_name) ||
       issue.field_name?.startsWith("attributes.") ||
       ["color", "size", "material", "weight", "upc"].includes(issue.field_name));
   const [isEditing, setIsEditing] = useState(false);
