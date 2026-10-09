@@ -10,43 +10,57 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
+from app.services.product_field_utils import normalize_product_update_data
 from app.models.schemas import (
-    Product, DataIssue, CompetitorAlert, IngestionJob,
-    ProductStatus, ProductCreate, ProductUpdate, ProductResponse, DashboardStats,
+    Product, DataIssue, CompetitorAlert, IngestionJob, IngestionJobProduct,
+    ProductStatus, ProductSortField, SortOrder,
+    ProductCreate, ProductUpdate, ProductResponse, DashboardStats,
+    AiAnalysisStatus,
 )
+
+SORT_COLUMNS = {
+    ProductSortField.SKU: Product.sku,
+    ProductSortField.TITLE: Product.title,
+    ProductSortField.CATEGORY: Product.category,
+    ProductSortField.BRAND: Product.brand,
+    ProductSortField.PRICE: Product.price,
+    ProductSortField.STATUS: Product.status,
+    ProductSortField.UPDATED_AT: Product.updated_at,
+}
 
 logger = logging.getLogger("catalogiq.product_service")
 
 
-def get_products(
+def _build_products_query(
     db: Session,
-    skip: int = 0,
-    limit: int = 50,
-    status: Optional[ProductStatus] = None,
+    status: Optional[str] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
-) -> list[Product]:
-    """Retrieve products with optional filtering and pagination.
-
-    Args:
-        db: Database session.
-        skip: Number of records to skip.
-        limit: Maximum records to return.
-        status: Filter by product status.
-        search: Search term for title/SKU matching.
-        category: Filter by category.
-
-    Returns:
-        List of matching Product records.
-    """
+    ingestion_job_id: Optional[int] = None,
+):
+    """Build a filtered product query without pagination or sorting."""
     query = db.query(Product)
 
+    if ingestion_job_id is not None:
+        query = query.join(
+            IngestionJobProduct,
+            IngestionJobProduct.product_id == Product.id,
+        ).filter(IngestionJobProduct.ingestion_job_id == ingestion_job_id)
     if status:
-        query = query.filter(Product.status == status)
+        status_str = str(status.value if hasattr(status, "value") else status).strip().lower()
+        if status_str == "processing":
+            query = query.filter(
+                Product.ai_analysis_status.in_([
+                    AiAnalysisStatus.PENDING.value,
+                    AiAnalysisStatus.ANALYZING.value,
+                ])
+            )
+        elif status_str:
+            query = query.filter(Product.status == status_str)
     if category:
         query = query.filter(Product.category == category)
     if search:
-        search_term = f"%{search}%"
+        search_term = f"%{search.strip()}%"
         query = query.filter(
             or_(
                 Product.title.ilike(search_term),
@@ -55,8 +69,71 @@ def get_products(
             )
         )
 
-    query = query.order_by(Product.updated_at.desc())
-    return query.offset(skip).limit(limit).all()
+    return query
+
+
+def get_products(
+    db: Session,
+    skip: int = 0,
+    limit: int = 50,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    ingestion_job_id: Optional[int] = None,
+    sort_by: ProductSortField = ProductSortField.TITLE,
+    sort_order: SortOrder = SortOrder.ASC,
+) -> tuple[list[Product], int]:
+    """Retrieve products with optional filtering, sorting, and pagination.
+
+    Args:
+        db: Database session.
+        skip: Number of records to skip.
+        limit: Maximum records to return.
+        status: Filter by product status.
+        search: Search term for title/SKU/brand matching.
+        category: Filter by category.
+        ingestion_job_id: Limit results to products from one uploaded file.
+        sort_by: Column to sort by.
+        sort_order: Sort direction.
+
+    Returns:
+        Tuple of matching Product records and total count before pagination.
+    """
+    query = _build_products_query(
+        db,
+        status=status,
+        search=search,
+        category=category,
+        ingestion_job_id=ingestion_job_id,
+    )
+    total = query.count()
+
+    sort_column = SORT_COLUMNS.get(sort_by, Product.title)
+    if sort_order == SortOrder.ASC:
+        query = query.order_by(sort_column.asc())
+    else:
+        query = query.order_by(sort_column.desc())
+
+    products = query.offset(skip).limit(limit).all()
+    return products, total
+
+
+def list_products_for_export(
+    db: Session,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    ingestion_job_id: Optional[int] = None,
+) -> list[Product]:
+    """Return every product matching the current Products-page filters."""
+    query = _build_products_query(
+        db,
+        status=status,
+        search=search,
+        category=category,
+        ingestion_job_id=ingestion_job_id,
+    )
+    return query.order_by(Product.sku.asc()).all()
 
 
 def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
@@ -103,6 +180,9 @@ def create_product(db: Session, product_data: ProductCreate) -> Product:
         brand=product_data.brand,
         price=product_data.price,
         currency=product_data.currency,
+        stock=getattr(product_data, "stock", None),
+        in_stock=getattr(product_data, "in_stock", True) if getattr(product_data, "in_stock", None) is not None else True,
+        image_url=getattr(product_data, "image_url", None),
         attributes=product_data.attributes,
         status=ProductStatus.DRAFT,
     )
@@ -128,7 +208,10 @@ def update_product(db: Session, product_id: int, updates: ProductUpdate) -> Opti
     if not product:
         return None
 
-    update_data = updates.model_dump(exclude_unset=True)
+    update_data = normalize_product_update_data(
+        product,
+        updates.model_dump(exclude_unset=True),
+    )
     for field, value in update_data.items():
         setattr(product, field, value)
 
@@ -158,17 +241,69 @@ def delete_product(db: Session, product_id: int) -> bool:
     return True
 
 
-def get_categories(db: Session) -> list[str]:
+def get_categories(db: Session, ingestion_job_id: Optional[int] = None) -> list[str]:
     """Get all distinct product categories.
 
     Args:
         db: Database session.
+        ingestion_job_id: Optional job ID filter.
 
     Returns:
         List of unique category names.
     """
-    results = db.query(Product.category).distinct().filter(Product.category.isnot(None)).all()
-    return sorted([r[0] for r in results])
+    query = db.query(Product.category).distinct().filter(Product.category.isnot(None))
+    if ingestion_job_id is not None:
+        query = query.join(
+            IngestionJobProduct,
+            IngestionJobProduct.product_id == Product.id,
+        ).filter(IngestionJobProduct.ingestion_job_id == ingestion_job_id)
+    results = query.all()
+    return sorted([r[0] for r in results if r[0]])
+
+
+def get_statuses(db: Session, ingestion_job_id: Optional[int] = None) -> list[str]:
+    """Get all distinct product statuses that actually exist in the database.
+
+    Args:
+        db: Database session.
+        ingestion_job_id: Optional job ID to limit statuses to.
+
+    Returns:
+        List of actual existing status strings.
+    """
+    query = db.query(Product.status).filter(Product.status.isnot(None))
+    if ingestion_job_id is not None:
+        query = query.join(
+            IngestionJobProduct,
+            IngestionJobProduct.product_id == Product.id,
+        ).filter(IngestionJobProduct.ingestion_job_id == ingestion_job_id)
+
+    raw_results = query.distinct().all()
+    statuses = []
+    for r in raw_results:
+        val = r[0].value if hasattr(r[0], "value") else str(r[0])
+        if val and val not in statuses:
+            statuses.append(val)
+
+    # Check if any products are in processing (pending / analyzing)
+    ai_query = db.query(Product.id)
+    if ingestion_job_id is not None:
+        ai_query = ai_query.join(
+            IngestionJobProduct,
+            IngestionJobProduct.product_id == Product.id,
+        ).filter(IngestionJobProduct.ingestion_job_id == ingestion_job_id)
+    is_processing = ai_query.filter(
+        Product.ai_analysis_status.in_([
+            AiAnalysisStatus.PENDING.value,
+            AiAnalysisStatus.ANALYZING.value,
+        ])
+    ).first() is not None
+
+    if is_processing and "processing" not in statuses:
+        statuses.append("processing")
+
+    order_map = {"active": 0, "flagged": 1, "processing": 2, "draft": 3, "archived": 4}
+    return sorted(statuses, key=lambda s: (order_map.get(s, 99), s))
 
 
 def get_dashboard_stats(db: Session) -> DashboardStats:
@@ -191,8 +326,11 @@ def get_dashboard_stats(db: Session) -> DashboardStats:
         Product.generated_description.is_(None) | (Product.generated_description == ""),
     ).scalar() or 0
 
+    from app.services.competitor_service import get_enabled_competitor_sources
+
     recent_alerts = db.query(func.count(CompetitorAlert.id)).filter(
-        CompetitorAlert.acknowledged == False
+        CompetitorAlert.acknowledged == False,
+        CompetitorAlert.source.in_(get_enabled_competitor_sources()),
     ).scalar() or 0
 
     last_job = db.query(IngestionJob).order_by(IngestionJob.started_at.desc()).first()

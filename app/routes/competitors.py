@@ -13,16 +13,39 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.models.database import get_db
+from app.config import settings
 from app.models.schemas import (
     CompetitorSource,
     CompetitorPriceResponse, CompetitorAlertResponse,
-    CompetitorScrapeRequest,
+    CompetitorScrapeRequest, CompetitorConfigResponse, CompetitorMarketplaceResponse,
 )
 from app.services import competitor_service
 
 logger = logging.getLogger("catalogiq.routes.competitors")
 
 router = APIRouter(prefix="/api/competitors", tags=["Competitor Monitoring"])
+
+
+@router.get("/config", response_model=CompetitorConfigResponse)
+def get_competitor_config() -> CompetitorConfigResponse:
+    """Return enabled competitor marketplaces and region from environment config."""
+    sources = [
+        CompetitorMarketplaceResponse(
+            id=CompetitorSource(marketplace.id),
+            platform=marketplace.platform,
+            region=settings.scrape_region.upper(),
+            label=marketplace.label,
+            currency=marketplace.currency,
+            base_url=marketplace.base_url,
+            search_url_template=marketplace.search_url_template,
+        )
+        for marketplace in settings.marketplaces.values()
+    ]
+    return CompetitorConfigResponse(
+        region=settings.scrape_region,
+        sources=sources,
+        usd_inr_exchange_rate=settings.USD_INR_EXCHANGE_RATE,
+    )
 
 
 @router.post("/scrape")

@@ -1,0 +1,1 @@
+"""CatalogIQ — FastAPI Dependencies Package"""
